@@ -16,6 +16,22 @@ from app.schemas.slot_schema import (
     SlotStatusUpdate,
     SlotOut,
 )
+from app.schemas.session_schema import (
+    SessionCreate,
+    SessionResolvePlate,
+    SessionCheckout,
+    SessionOut,
+)
+from app.schemas.payment_schema import (
+    PaymentOut,
+)
+from app.schemas.alert_schema import (
+    AlertResolve,
+    AlertOut,
+)
+from app.schemas.audit_schema import (
+    AuditLogOut,
+)
 
 __all__ = [
     # Auth & User
@@ -31,4 +47,16 @@ __all__ = [
     # Slots
     "SlotStatusUpdate",
     "SlotOut",
+    # Sessions
+    "SessionCreate",
+    "SessionResolvePlate",
+    "SessionCheckout",
+    "SessionOut",
+    # Payments
+    "PaymentOut",
+    # Alerts
+    "AlertResolve",
+    "AlertOut",
+    # Audits
+    "AuditLogOut",
 ]
