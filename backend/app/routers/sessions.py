@@ -198,6 +198,11 @@ def resolve_plate_mismatch(
     else:
         session_obj.status = SessionStatus.CANCELLED
         decision_str = "Từ chối duyệt cho xe ra"
+        # Giải phóng ô đỗ về EMPTY nếu bị từ chối
+        if session_obj.slot_id:
+            slot = db.query(Slot).filter(Slot.id == session_obj.slot_id).first()
+            if slot and slot.status == SlotStatus.OCCUPIED:
+                slot.status = SlotStatus.EMPTY
 
     # Tự động ghi nhận Audit Log
     audit = AuditLog(
@@ -275,6 +280,10 @@ def checkout_session(
     session_obj.is_paid = True
     session_obj.status = SessionStatus.COMPLETED
     session_obj.exit_time = func.now()
+    if payload.exit_plate is not None:
+        session_obj.exit_plate = payload.exit_plate
+    if payload.exit_image_url is not None:
+        session_obj.exit_image_url = payload.exit_image_url
 
     # 4. Tự động giải phóng ô đỗ về EMPTY
     if session_obj.slot_id:

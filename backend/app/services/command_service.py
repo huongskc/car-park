@@ -1,6 +1,7 @@
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -98,7 +99,11 @@ class CommandService:
         )
         db.add(audit)
 
-        # 6. Bắn bản tin JSON xuống MQTT Broker
+        # 6. Ghi nhận giao dịch CSDL trước (Khắc phục Race Condition Publish-before-Commit)
+        db.commit()
+        db.refresh(new_command)
+
+        # 7. Bắn bản tin JSON xuống MQTT Broker
         command_topic = f"{settings.MQTT_BASE_TOPIC}/{device.site_id}/{device.id}/commands"
         mqtt_payload = {
             "commandId": command_id,
@@ -107,16 +112,24 @@ class CommandService:
             "reason": payload.reason,
             "sentAt": datetime.now().isoformat(),
         }
-        mqtt_service.publish(command_topic, mqtt_payload, qos=1)
-        logger.info(f"[Command Service] Đã phát lệnh '{command_id}' ({payload.action.value}) tới topic '{command_topic}'")
+        try:
+            mqtt_service.publish(command_topic, mqtt_payload, qos=1)
+            logger.info(f"[Command Service] Đã phát lệnh '{command_id}' ({payload.action.value}) tới topic '{command_topic}'")
+        except Exception as e:
+            logger.error(f"[Command Service] Lỗi khi publish MQTT cho lệnh '{command_id}': {e}", exc_info=True)
+            new_command.status = CommandStatus.FAILED
+            new_command.ack_status = "PUBLISH_FAILED"
+            new_command.ack_reason = str(e)
+            db.commit()
+            db.refresh(new_command)
 
-        db.commit()
-        db.refresh(new_command)
         return new_command
 
-    def process_ack(self, payload: dict, db: Session) -> bool:
+    def process_ack(self, payload: dict, db: Session, topic_device_id: Optional[str] = None) -> bool:
         """
         Xử lý bản tin ACK phản hồi từ vi điều khiển ESP32 gửi lên MQTT:
+        - Đối soát device_id trên topic với device_id của lệnh trong CSDL.
+        - Đảm bảo tính bất biến (Idempotency): Bỏ qua nếu lệnh đã kết thúc (ACKED/FAILED/EXPIRED).
         - Cập nhật trạng thái lệnh: ACKED (nếu thành công) hoặc FAILED.
         - Cập nhật mốc thời gian hoàn tất acked_at và lý do phản hồi ack_reason.
         """
@@ -129,6 +142,19 @@ class CommandService:
         if not command:
             logger.warning(f"[Command Service] Nhận ACK cho lệnh không tồn tại trong CSDL: '{command_id}'")
             return False
+
+        # 1. Đối soát device_id nếu được truyền vào từ topic
+        if topic_device_id and command.device_id != topic_device_id:
+            logger.warning(
+                f"[Command Service] Thiết bị gửi ACK không khớp: Lệnh '{command_id}' thuộc về '{command.device_id}', "
+                f"nhưng topic ACK đến từ '{topic_device_id}'"
+            )
+            return False
+
+        # 2. Đảm bảo tính bất biến (Idempotency): Không ghi đè lệnh đã kết thúc
+        if command.status in [CommandStatus.ACKED, CommandStatus.FAILED, CommandStatus.EXPIRED]:
+            logger.info(f"[Command Service] Lệnh '{command_id}' đã ở trạng thái kết thúc ({command.status.value}), bỏ qua ACK trùng lặp.")
+            return True
 
         ack_status_raw = str(payload.get("status", "SUCCESS")).upper()
         command.ack_status = ack_status_raw
@@ -144,6 +170,42 @@ class CommandService:
 
         db.commit()
         return True
+
+    def expire_stale_commands(self, timeout_seconds: int = 30, db: Optional[Session] = None) -> int:
+        """
+        Quét và chuyển các lệnh điều khiển ở trạng thái SENT quá thời gian chờ (timeout) sang EXPIRED.
+        Hỗ trợ dọn dẹp các lệnh treo khi ESP32 bị sập nguồn hoặc mất kết nối mạng.
+        """
+        close_db = False
+        if db is None:
+            from app.database import SessionLocal
+            db = SessionLocal()
+            close_db = True
+        try:
+            cutoff = datetime.now() - timedelta(seconds=timeout_seconds)
+            stale_cmds = db.query(Command).filter(
+                Command.status == CommandStatus.SENT,
+                Command.sent_at <= cutoff,
+            ).all()
+
+            count = len(stale_cmds)
+            for cmd in stale_cmds:
+                cmd.status = CommandStatus.EXPIRED
+                cmd.ack_status = "TIMEOUT"
+                cmd.ack_reason = f"Lệnh vượt quá thời gian chờ phản hồi từ thiết bị ({timeout_seconds}s)"
+                cmd.acked_at = func.now()
+
+            if count > 0:
+                db.commit()
+                logger.info(f"[Command Service] Đã chuyển {count} lệnh treo (SENT) sang trạng thái EXPIRED.")
+            return count
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[Command Service] Lỗi khi quét lệnh timeout: {e}", exc_info=True)
+            return 0
+        finally:
+            if close_db:
+                db.close()
 
 
 # Khởi tạo singleton instance

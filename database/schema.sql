@@ -181,7 +181,7 @@ CREATE TABLE `alerts` (
     `message` VARCHAR(255) NOT NULL,
     `device_id` VARCHAR(50) NULL,
     `session_id` INT NULL,
-    `status` ENUM('NEW', 'ACKNOWLEDGED', 'RESOLVED') NOT NULL DEFAULT 'NEW',
+    `status` ENUM('NEW', 'ACKNOWLEDGED', 'RESOLVED', 'DISMISSED') NOT NULL DEFAULT 'NEW',
     `resolved_by` INT NULL,
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `resolved_at` DATETIME NULL,

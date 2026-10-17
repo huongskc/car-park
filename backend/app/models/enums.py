@@ -89,3 +89,4 @@ class AlertStatus(str, Enum):
     NEW = "NEW"
     ACKNOWLEDGED = "ACKNOWLEDGED"
     RESOLVED = "RESOLVED"
+    DISMISSED = "DISMISSED"

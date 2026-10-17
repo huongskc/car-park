@@ -81,3 +81,33 @@ def resolve_alert(
     db.refresh(alert)
 
     return alert
+
+
+@router.post(
+    "/{alert_id}/ack",
+    response_model=AlertOut,
+    summary="Tiếp nhận xử lý cảnh báo sự cố (OPERATOR & ADMIN)",
+)
+def acknowledge_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR)),
+) -> AlertOut:
+    """
+    Endpoint xác nhận tiếp nhận xử lý cảnh báo sự cố:
+    - Chuyển trạng thái từ `NEW` sang `ACKNOWLEDGED`.
+    - Ghi nhận nhân viên tiếp nhận sự cố (`resolved_by = current_user.id`).
+    """
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy cảnh báo có ID {alert_id}.",
+        )
+
+    alert.status = AlertStatus.ACKNOWLEDGED
+    alert.resolved_by = current_user.id
+    db.commit()
+    db.refresh(alert)
+
+    return alert

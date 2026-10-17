@@ -1,4 +1,5 @@
 import secrets
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
@@ -10,6 +11,8 @@ from app.models.enums import UserRole, DeviceStatus
 from app.models.user import User
 from app.models.device import Device, DeviceConfig
 from app.models.audit import AuditLog
+from app.config import settings
+from app.services.mqtt_service import mqtt_service
 from app.schemas.device_schema import (
     DeviceRegister,
     DeviceConfigUpdate,
@@ -266,5 +269,20 @@ def update_device_config(
 
     db.commit()
     db.refresh(device)
+
+    # Bắn bản tin cấu hình mới qua MQTT Broker xuống vi điều khiển ESP32
+    config_topic = f"{settings.MQTT_BASE_TOPIC}/{device.site_id}/{device.id}/config"
+    config_payload = {
+        "version": config.version,
+        "distanceThresholdCm": float(config.distance_threshold_cm),
+        "servoOpenTimeSec": config.servo_open_time_sec,
+        "heartbeatIntervalSec": config.heartbeat_interval_sec,
+        "buzzerEnabled": config.buzzer_enabled,
+        "updatedAt": datetime.now().isoformat(),
+    }
+    try:
+        mqtt_service.publish(config_topic, config_payload, qos=1)
+    except Exception:
+        pass
 
     return device

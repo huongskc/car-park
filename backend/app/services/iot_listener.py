@@ -6,10 +6,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models.enums import DeviceStatus, SlotStatus, AlertType, AlertSeverity, AlertStatus
+from app.models.enums import DeviceStatus, SlotStatus, AlertType, AlertSeverity, AlertStatus, SessionStatus
 from app.models.device import Device, DeviceConfig
 from app.models.slot import Slot
 from app.models.card import Card
+from app.models.session import ParkingSession
 from app.models.telemetry import TelemetryLog
 from app.models.alert import Alert
 from app.services.mqtt_service import mqtt_service, MQTTService
@@ -20,12 +21,13 @@ logger = logging.getLogger("smart_parking.iot_listener")
 def parse_topic_info(topic: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Bóc tách thông tin định danh từ topic MQTT.
-    Hỗ trợ 2 định dạng:
+    Hỗ trợ cả 2 định dạng:
     1. Chuẩn phân vùng 3 cấp: parking/{site_id}/{device_id}/{msg_type...}
        Ví dụ: parking/PTIT_ZONE_1/ESP32_GATE_01/telemetry -> ("PTIT_ZONE_1", "ESP32_GATE_01", "telemetry")
        Ví dụ: parking/PTIT_ZONE_1/ESP32_GATE_01/events/rfid -> ("PTIT_ZONE_1", "ESP32_GATE_01", "events/rfid")
     2. Rút gọn 2 cấp: parking/{device_id}/{msg_type...} hoặc parking/devices/{device_id}/{msg_type...}
        Ví dụ: parking/ESP32_GATE_01/status -> (None, "ESP32_GATE_01", "status")
+       Ví dụ: parking/ESP32_GATE_01/events/rfid -> (None, "ESP32_GATE_01", "events/rfid")
        Ví dụ: parking/devices/ESP32_GATE_01/status -> (None, "ESP32_GATE_01", "status")
     """
     parts = topic.strip("/").split("/")
@@ -38,14 +40,27 @@ def parse_topic_info(topic: str) -> tuple[Optional[str], Optional[str], Optional
         msg_type = "/".join(parts[3:])
         return None, device_id, msg_type
 
-    # parking/{site_id}/{device_id}/... (4 phần trở lên nếu có sub-type như events/rfid)
+    # parking/{device_id}/events/{event_type} (Chuẩn 2 cấp có namespace 'events')
+    if len(parts) == 4 and parts[0] == settings.MQTT_BASE_TOPIC and parts[2] == "events":
+        device_id = parts[1]
+        msg_type = f"events/{parts[3]}"
+        return None, device_id, msg_type
+
+    # parking/{site_id}/{device_id}/events/{event_type} (Chuẩn 3 cấp có namespace 'events')
+    if len(parts) == 5 and parts[0] == settings.MQTT_BASE_TOPIC and parts[3] == "events":
+        site_id = parts[1]
+        device_id = parts[2]
+        msg_type = f"events/{parts[4]}"
+        return site_id, device_id, msg_type
+
+    # parking/{site_id}/{device_id}/{msg_type} (Chuẩn 3 cấp thông thường)
     if len(parts) >= 4 and parts[0] == settings.MQTT_BASE_TOPIC:
         site_id = parts[1]
         device_id = parts[2]
         msg_type = "/".join(parts[3:])
         return site_id, device_id, msg_type
 
-    # parking/{device_id}/{msg_type} (3 phần)
+    # parking/{device_id}/{msg_type} (Chuẩn 2 cấp thông thường: status, telemetry, ack...)
     if len(parts) == 3 and parts[0] == settings.MQTT_BASE_TOPIC:
         device_id = parts[1]
         msg_type = parts[2]
@@ -97,7 +112,11 @@ class IoTListener:
                 return
 
             device.last_heartbeat_at = func.now()
-            device.is_online = payload.get("isOnline", payload.get("is_online", True))
+            raw_status = payload.get("status")
+            if isinstance(raw_status, str):
+                device.is_online = (raw_status.lower() != "offline")
+            else:
+                device.is_online = payload.get("isOnline", payload.get("is_online", True))
 
             if "fwVersion" in payload:
                 device.fw_version = payload["fwVersion"]
@@ -180,8 +199,10 @@ class IoTListener:
             config = db.query(DeviceConfig).filter(DeviceConfig.device_id == device_id).first()
             threshold = float(config.distance_threshold_cm) if config else settings.DISTANCE_THRESHOLD_CM
 
-            # Xe hiện diện nếu khoảng cách <= ngưỡng
-            is_occupied = (distance_cm <= threshold)
+            # Xe hiện diện nếu khoảng cách nằm trong khoảng hợp lệ (> 2.0 cm và <= threshold)
+            # Khử nhiễu cảm biến siêu âm (HC-SR04 trả về 0.0 cm khi dội âm hoặc đứt tín hiệu)
+            SENSOR_MIN_DISTANCE_CM = 2.0
+            is_occupied = (SENSOR_MIN_DISTANCE_CM < distance_cm <= threshold)
 
             # Phân tích mốc thời gian lấy mẫu
             sampled_at_str = payload.get("sampledAt", payload.get("sampled_at"))
@@ -227,11 +248,36 @@ class IoTListener:
                     # Giữ nguyên trạng thái RESERVED
                     pass
                 else:
-                    # Tự động đồng bộ EMPTY <-> OCCUPIED
-                    new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
-                    if slot.status != new_status:
-                        logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
-                        slot.status = new_status
+                    # Kiểm tra xem ô đỗ có đang gắn với phiên gửi xe ACTIVE hay không (Session-first Truth)
+                    active_session = db.query(ParkingSession).filter(
+                        ParkingSession.slot_id == slot.id,
+                        ParkingSession.status == SessionStatus.ACTIVE,
+                    ).first()
+
+                    if active_session:
+                        # Bảo vệ phiên xe đang diễn ra, giữ nguyên OCCUPIED
+                        slot.status = SlotStatus.OCCUPIED
+                        if not is_occupied:
+                            # Cảm biến đo rỗng bất thường khi xe đang trong phiên ACTIVE
+                            anomaly_alert = Alert(
+                                alert_type=AlertType.SYSTEM_ERROR,
+                                severity=AlertSeverity.WARNING,
+                                message=(
+                                    f"Cảm biến đo rỗng ({distance_cm} cm) nhưng ô '{slot.id}' đang có phiên gửi xe ACTIVE "
+                                    f"(Mã phiên: {active_session.session_code}, Biển số: {active_session.entry_plate or 'N/A'})."
+                                ),
+                                device_id=device.id,
+                                session_id=active_session.id,
+                                status=AlertStatus.NEW,
+                            )
+                            db.add(anomaly_alert)
+                            logger.warning(f"[IoT Listener] Bất thường: Ô '{slot.id}' có phiên ACTIVE nhưng cảm biến đo rỗng!")
+                    else:
+                        # Không có phiên xe: Tự động đồng bộ EMPTY <-> OCCUPIED
+                        new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
+                        if slot.status != new_status:
+                            logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
+                            slot.status = new_status
             else:
                 logger.warning(f"[IoT Listener] Không tìm thấy ô đỗ '{slot_id}' trong CSDL.")
 
@@ -357,11 +403,13 @@ class IoTListener:
             logger.warning(f"[IoT Listener] Payload ACK không phải JSON dict: {payload}")
             return
 
+        _, device_id, _ = parse_topic_info(topic)
+
         from app.services.command_service import command_service
 
         db: Session = SessionLocal()
         try:
-            command_service.process_ack(payload, db)
+            command_service.process_ack(payload, db, topic_device_id=device_id)
         except Exception as e:
             db.rollback()
             logger.error(f"[IoT Listener] Lỗi xử lý bản tin ACK: {e}", exc_info=True)

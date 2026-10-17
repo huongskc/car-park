@@ -8,12 +8,13 @@ BACKEND_DIR = CURRENT_DIR.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.services import mqtt_service, setup_iot_listeners
+from app.services import mqtt_service, setup_iot_listeners, command_service
 from app.routers import (
     auth_router,
     users_router,
@@ -31,12 +32,30 @@ from app.routers import (
 async def lifespan(app: FastAPI):
     """
     Quản lý vòng đời ứng dụng FastAPI:
-    - Startup: Đăng ký toàn bộ IoT Message Listeners và khởi động MQTT Client Service.
+    - Startup: Đăng ký toàn bộ IoT Message Listeners, khởi động MQTT Client Service,
+      và chạy background task dọn dẹp các lệnh điều khiển quá hạn (Timeout Sweeper).
     - Shutdown: Ngắt kết nối và giải phóng tài nguyên an toàn.
     """
     setup_iot_listeners()
     mqtt_service.start()
+
+    async def _command_timeout_sweeper():
+        while True:
+            try:
+                await asyncio.sleep(20)
+                command_service.expire_stale_commands(timeout_seconds=30)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    sweeper_task = asyncio.create_task(_command_timeout_sweeper())
     yield
+    sweeper_task.cancel()
+    try:
+        await sweeper_task
+    except asyncio.CancelledError:
+        pass
     mqtt_service.stop()
 
 

@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.dependencies import require_role
 from app.models.card import Card
+from app.models.audit import AuditLog
+from app.models.user import User
 from app.models.enums import CardType, UserRole
 from app.schemas.card_schema import CardCreate, CardStatusUpdate, CardOut
 
@@ -101,11 +103,13 @@ def update_card_status(
     uid: str,
     payload: CardStatusUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR)),
 ) -> CardOut:
     """
     Endpoint khóa hoặc kích hoạt lại thẻ RFID:
     - Chuyển `is_active = False` khi thẻ bị mất hoặc tạm ngừng sử dụng.
     - Chuyển `is_active = True` để mở khóa.
+    - Tự động ghi nhận Audit Log.
     """
     card = db.query(Card).filter(Card.uid == uid).first()
     if not card:
@@ -115,6 +119,18 @@ def update_card_status(
         )
 
     card.is_active = payload.is_active
+
+    # Ghi nhận Audit Log
+    status_str = "KÍCH HOẠT" if payload.is_active else "KHÓA"
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="CARD_STATUS_UPDATE",
+        resource_type="cards",
+        resource_id=uid,
+        details=f"Cập nhật trạng thái thẻ RFID {uid}: {status_str} (is_active={payload.is_active})",
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(card)
 

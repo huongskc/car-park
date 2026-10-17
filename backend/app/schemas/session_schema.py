@@ -21,6 +21,8 @@ class SessionResolvePlate(BaseModel):
 class SessionCheckout(BaseModel):
     """Schema thanh toán phí gửi xe và kết thúc phiên."""
     payment_method: PaymentMethod = Field(default=PaymentMethod.CASH, description="Phương thức thanh toán (CASH, SIMULATED_MOMO)")
+    exit_plate: Optional[str] = Field(None, max_length=20, description="Biển số xe nhận diện từ camera ALPR làn ra", examples=["30A-999.88"])
+    exit_image_url: Optional[str] = Field(None, max_length=255, description="Đường dẫn ảnh chụp lúc xe ra", examples=["/images/out_20261016_01.jpg"])
 
 
 class SessionOut(BaseModel):

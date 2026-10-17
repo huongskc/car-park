@@ -21,6 +21,8 @@ router = APIRouter(
     summary="Xem danh sách ô đỗ xe và trạng thái realtime (VIEWER, OPERATOR, ADMIN)",
 )
 def list_slots(
+    skip: int = Query(default=0, ge=0, description="Số lượng bản ghi bỏ qua"),
+    limit: int = Query(default=50, ge=1, le=100, description="Số lượng bản ghi tối đa"),
     site_id: Optional[str] = Query(default=None, description="Lọc theo mã khu vực bãi đỗ"),
     slot_status: Optional[SlotStatus] = Query(default=None, alias="status", description="Lọc theo trạng thái ô đỗ"),
     db: Session = Depends(get_db),
@@ -29,6 +31,7 @@ def list_slots(
     """
     Endpoint tra cứu danh sách ô đỗ xe:
     - Quyền truy cập: Toàn bộ người dùng đã đăng nhập (VIEWER, OPERATOR, ADMIN).
+    - Hỗ trợ phân trang qua `skip` và `limit`.
     - Hỗ trợ lọc theo `site_id` hoặc trạng thái `status` (EMPTY, OCCUPIED, RESERVED, MAINTENANCE).
     - Trả về thông tin trạng thái và khoảng cách đo được gần nhất từ cảm biến siêu âm.
     """
@@ -40,7 +43,7 @@ def list_slots(
     if slot_status is not None:
         query = query.filter(Slot.status == slot_status)
 
-    return query.order_by(Slot.id.asc()).all()
+    return query.order_by(Slot.id.asc()).offset(skip).limit(limit).all()
 
 
 @router.patch(
