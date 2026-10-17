@@ -8,10 +8,12 @@ BACKEND_DIR = CURRENT_DIR.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.services.mqtt_service import mqtt_service
 from app.routers import (
     auth_router,
     users_router,
@@ -23,12 +25,26 @@ from app.routers import (
     devices_router,
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Quản lý vòng đời ứng dụng FastAPI:
+    - Startup: Khởi động luồng mạng ngầm kết nối Mosquitto MQTT Broker.
+    - Shutdown: Ngắt kết nối và giải phóng tài nguyên an toàn.
+    """
+    mqtt_service.start()
+    yield
+    mqtt_service.stop()
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 # ----------------------------------------------------
@@ -78,7 +94,10 @@ def root_endpoint():
 )
 def health_check():
     """Health check dành cho monitoring và container orchestrator."""
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "mqtt_connected": mqtt_service.is_connected,
+    }
 
 
 if __name__ == "__main__":
