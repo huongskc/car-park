@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.services.mqtt_service import mqtt_service
+from app.services import mqtt_service, setup_iot_listeners
 from app.routers import (
     auth_router,
     users_router,
@@ -30,9 +30,10 @@ from app.routers import (
 async def lifespan(app: FastAPI):
     """
     Quản lý vòng đời ứng dụng FastAPI:
-    - Startup: Khởi động luồng mạng ngầm kết nối Mosquitto MQTT Broker.
+    - Startup: Đăng ký toàn bộ IoT Message Listeners và khởi động MQTT Client Service.
     - Shutdown: Ngắt kết nối và giải phóng tài nguyên an toàn.
     """
+    setup_iot_listeners()
     mqtt_service.start()
     yield
     mqtt_service.stop()
