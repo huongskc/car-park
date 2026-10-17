@@ -32,6 +32,13 @@ from app.schemas.alert_schema import (
 from app.schemas.audit_schema import (
     AuditLogOut,
 )
+from app.schemas.device_schema import (
+    DeviceRegister,
+    DeviceConfigUpdate,
+    DeviceStatusChange,
+    DeviceConfigOut,
+    DeviceOut,
+)
 
 __all__ = [
     # Auth & User
@@ -59,4 +66,10 @@ __all__ = [
     "AlertOut",
     # Audits
     "AuditLogOut",
+    # Devices & IoT Lifecycle
+    "DeviceRegister",
+    "DeviceConfigUpdate",
+    "DeviceStatusChange",
+    "DeviceConfigOut",
+    "DeviceOut",
 ]

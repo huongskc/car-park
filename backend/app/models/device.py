@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, Enum, ForeignKey, func
+from sqlalchemy.orm import relationship
 from app.models.base import Base, TimestampMixin
 from app.models.enums import DeviceStatus
 
@@ -17,6 +18,8 @@ class Device(Base, TimestampMixin):
     hw_version = Column(String(50), nullable=True, default="ESP32-WROOM-32")
     last_heartbeat_at = Column(DateTime, nullable=True)
 
+    config = relationship("DeviceConfig", back_populates="device", uselist=False, lazy="joined", cascade="all, delete-orphan")
+
 
 class DeviceConfig(Base):
     __tablename__ = "device_configs"
@@ -29,3 +32,5 @@ class DeviceConfig(Base):
     buzzer_enabled = Column(Boolean, nullable=False, default=True)
     version = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    device = relationship("Device", back_populates="config")

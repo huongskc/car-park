@@ -5,6 +5,7 @@ from app.routers.slots import router as slots_router
 from app.routers.sessions import router as sessions_router
 from app.routers.alerts import router as alerts_router
 from app.routers.audits import router as audits_router
+from app.routers.devices import router as devices_router
 
 __all__ = [
     "auth_router",
@@ -14,4 +15,5 @@ __all__ = [
     "sessions_router",
     "alerts_router",
     "audits_router",
+    "devices_router",
 ]

@@ -20,6 +20,7 @@ from app.routers import (
     sessions_router,
     alerts_router,
     audits_router,
+    devices_router,
 )
 
 app = FastAPI(
@@ -51,6 +52,7 @@ app.include_router(slots_router, prefix="/api/v1")
 app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(alerts_router, prefix="/api/v1")
 app.include_router(audits_router, prefix="/api/v1")
+app.include_router(devices_router, prefix="/api/v1")
 
 
 @app.get(
