@@ -345,6 +345,29 @@ class IoTListener:
         finally:
             db.close()
 
+    # ----------------------------------------------------
+    # 4. XỬ LÝ BẢN TIN PHẢN HỒI ACK TỪ VI ĐIỀU KHIỂN ESP32
+    # ----------------------------------------------------
+    def handle_ack(self, topic: str, payload: Any) -> None:
+        """
+        Tiếp nhận bản tin ACK phản hồi kết quả thực thi lệnh phần cứng từ ESP32.
+        Cập nhật trạng thái lệnh (ACKED / FAILED) và thời điểm acked_at.
+        """
+        if not isinstance(payload, dict):
+            logger.warning(f"[IoT Listener] Payload ACK không phải JSON dict: {payload}")
+            return
+
+        from app.services.command_service import command_service
+
+        db: Session = SessionLocal()
+        try:
+            command_service.process_ack(payload, db)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[IoT Listener] Lỗi xử lý bản tin ACK: {e}", exc_info=True)
+        finally:
+            db.close()
+
 
 # Khởi tạo singleton listener instance
 iot_listener = IoTListener()
@@ -371,5 +394,10 @@ def setup_iot_listeners(client: MQTTService = mqtt_service) -> None:
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/events/rfid", iot_listener.handle_rfid)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/events/rfid", iot_listener.handle_rfid)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/events/rfid", iot_listener.handle_rfid)
+
+    # 4. Đăng ký nhận Bản tin phản hồi ACK từ Barrier/ESP32
+    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/ack", iot_listener.handle_ack)
+    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/ack", iot_listener.handle_ack)
+    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/ack", iot_listener.handle_ack)
 
     logger.info("[IoT Listener] Đã đăng ký thành công toàn bộ IoT Listeners vào MQTTService.")

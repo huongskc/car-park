@@ -23,6 +23,7 @@ from app.routers import (
     alerts_router,
     audits_router,
     devices_router,
+    commands_router,
 )
 
 
@@ -70,6 +71,7 @@ app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(alerts_router, prefix="/api/v1")
 app.include_router(audits_router, prefix="/api/v1")
 app.include_router(devices_router, prefix="/api/v1")
+app.include_router(commands_router, prefix="/api/v1")
 
 
 @app.get(

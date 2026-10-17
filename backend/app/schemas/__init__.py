@@ -39,6 +39,11 @@ from app.schemas.device_schema import (
     DeviceConfigOut,
     DeviceOut,
 )
+from app.schemas.command_schema import (
+    CommandSend,
+    CommandAckPayload,
+    CommandOut,
+)
 
 __all__ = [
     # Auth & User
@@ -72,4 +77,8 @@ __all__ = [
     "DeviceStatusChange",
     "DeviceConfigOut",
     "DeviceOut",
+    # Barrier Commands & ACK
+    "CommandSend",
+    "CommandAckPayload",
+    "CommandOut",
 ]
