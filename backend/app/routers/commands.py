@@ -65,9 +65,6 @@ def list_device_commands(
     - Lọc theo loại hành động (`action`) và trạng thái thực thi (`status`: SENT, ACKED, FAILED).
     - Sắp xếp giảm dần theo thời gian gửi (lệnh mới nhất lên đầu).
     """
-    # Tự động quét và cập nhật các lệnh SENT quá hạn (30s) sang EXPIRED
-    command_service.expire_stale_commands(timeout_seconds=30, db=db)
-
     query = db.query(Command).filter(Command.device_id == device_id)
 
     if action is not None:
@@ -91,9 +88,6 @@ def get_command_detail(
     """
     Endpoint tra cứu trạng thái thực thi của một lệnh (kiểm tra tiến độ nhận ACK từ phần cứng).
     """
-    # Tự động cập nhật lệnh treo quá hạn
-    command_service.expire_stale_commands(timeout_seconds=30, db=db)
-
     command = db.query(Command).filter(Command.id == command_id).first()
     if not command:
         raise HTTPException(

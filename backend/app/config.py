@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     MQTT_BROKER_HOST: str = "localhost"
     MQTT_BROKER_PORT: int = 1883
     MQTT_CLIENT_ID: str = "smart_parking_backend"
-    MQTT_USERNAME: Optional[str] = None
+    MQTT_USERNAME: Optional[str] = "backend_admin"
     MQTT_PASSWORD: Optional[str] = None
     MQTT_BASE_TOPIC: str = "parking"
     SITE_ID: str = "PTIT_ZONE_1"
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     SERVO_OPEN_TIMEOUT_SEC: int = 10
     HEARTBEAT_TIMEOUT_SEC: int = 30
     DISTANCE_THRESHOLD_CM: float = 15.0
+    TESTING: bool = False
 
     model_config = SettingsConfigDict(
         env_file=(BASE_DIR / ".env", ROOT_DIR / ".env"),

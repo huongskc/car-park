@@ -1,4 +1,5 @@
 import secrets
+import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,10 +16,13 @@ from app.config import settings
 from app.services.mqtt_service import mqtt_service
 from app.schemas.device_schema import (
     DeviceRegister,
+    DeviceRegisterOut,
     DeviceConfigUpdate,
     DeviceStatusChange,
     DeviceOut,
 )
+
+logger = logging.getLogger("smart_parking.devices")
 
 router = APIRouter(
     prefix="/devices",
@@ -67,7 +71,7 @@ def list_devices(
 
 @router.post(
     "",
-    response_model=DeviceOut,
+    response_model=DeviceRegisterOut,
     status_code=status.HTTP_201_CREATED,
     summary="Đăng ký Onboarding thiết bị mới và cấp Token (ADMIN)",
 )
@@ -75,7 +79,7 @@ def register_device(
     payload: DeviceRegister,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.ADMIN)),
-) -> DeviceOut:
+) -> DeviceRegisterOut:
     """
     Endpoint onboarding thiết bị IoT vào hệ thống (Bước 1, 2, 3 Vòng đời):
     - Kiểm tra tính duy nhất của mã định danh thiết bị (`id`).
@@ -241,6 +245,18 @@ def update_device_config(
             detail=f"Không tìm thấy thiết bị có ID '{device_id}'.",
         )
 
+    if device.status == DeviceStatus.DECOMMISSIONED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Thiết bị '{device_id}' đã ngừng sử dụng vĩnh viễn (DECOMMISSIONED), không thể gửi cấu hình.",
+        )
+
+    if device.status == DeviceStatus.SUSPENDED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Thiết bị '{device_id}' đang bị tạm ngưng hoạt động (SUSPENDED), vui lòng khôi phục trước khi gửi cấu hình.",
+        )
+
     config = db.query(DeviceConfig).filter(DeviceConfig.device_id == device_id).first()
     if not config:
         config = DeviceConfig(device_id=device_id, version=1)
@@ -280,9 +296,89 @@ def update_device_config(
         "buzzerEnabled": config.buzzer_enabled,
         "updatedAt": datetime.now().isoformat(),
     }
+    publish_error = None
     try:
-        mqtt_service.publish(config_topic, config_payload, qos=1)
-    except Exception:
-        pass
+        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1)
+        if getattr(msg_info, "rc", 0) != 0:
+            publish_error = f"MQTT Publish RC={msg_info.rc}"
+    except Exception as e:
+        publish_error = str(e)
+
+    if publish_error:
+        logger.error(f"[Devices] Lỗi đồng bộ cấu hình xuống thiết bị '{device_id}' qua MQTT: {publish_error}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Cấu hình đã được lưu vào CSDL (phiên bản {config.version}), nhưng không thể đồng bộ tới thiết bị "
+                f"qua MQTT ({publish_error}). Vui lòng gọi API POST /api/v1/devices/{device_id}/resend-config để gửi lại."
+            ),
+        )
 
     return device
+
+
+@router.post(
+    "/{device_id}/resend-config",
+    summary="Gửi lại cấu hình đã lưu trong CSDL xuống thiết bị qua MQTT (ADMIN)",
+)
+def resend_device_config(
+    device_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """
+    Endpoint cho phép Quản trị viên gửi lại bản tin cấu hình đã lưu trong CSDL
+    xuống thiết bị ESP32 qua MQTT khi lần cập nhật trước đó bị lỗi kết nối Broker.
+    """
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy thiết bị có ID '{device_id}'.",
+        )
+
+    if device.status == DeviceStatus.DECOMMISSIONED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Thiết bị '{device_id}' đã ngừng sử dụng vĩnh viễn (DECOMMISSIONED), không thể gửi cấu hình.",
+        )
+
+    if device.status == DeviceStatus.SUSPENDED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Thiết bị '{device_id}' đang bị tạm ngưng hoạt động (SUSPENDED), vui lòng khôi phục trước khi gửi cấu hình.",
+        )
+
+    config = db.query(DeviceConfig).filter(DeviceConfig.device_id == device_id).first()
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Thiết bị '{device_id}' chưa có bản ghi cấu hình nào trong CSDL.",
+        )
+
+    config_topic = f"{settings.MQTT_BASE_TOPIC}/{device.site_id}/{device.id}/config"
+    config_payload = {
+        "version": config.version,
+        "distanceThresholdCm": float(config.distance_threshold_cm),
+        "servoOpenTimeSec": config.servo_open_time_sec,
+        "heartbeatIntervalSec": config.heartbeat_interval_sec,
+        "buzzerEnabled": config.buzzer_enabled,
+        "updatedAt": datetime.now().isoformat(),
+    }
+    try:
+        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1)
+        if getattr(msg_info, "rc", 0) != 0:
+            raise RuntimeError(f"MQTT Publish RC={msg_info.rc}")
+    except Exception as e:
+        logger.error(f"[Devices] Gửi lại cấu hình cho '{device_id}' thất bại: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Không thể gửi cấu hình tới Mosquitto Broker: {e}.",
+        )
+
+    return {
+        "status": "PUBLISHED",
+        "device_id": device_id,
+        "version": config.version,
+        "topic": config_topic,
+    }

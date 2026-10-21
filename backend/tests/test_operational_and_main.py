@@ -163,10 +163,28 @@ def run_operational_smoke_test():
         print("   [OK] Xem chi tiết phiên xe thành công.")
 
         # 3.6 Giả lập ngoại lệ lệch biển số & Duyệt ngoại lệ (resolve-plate)
-        # Chuyển session tạm sang PENDING_REVIEW để kiểm thử
-        session_db = db.query(ParkingSession).filter(ParkingSession.id == session_id).first()
-        session_db.status = SessionStatus.PENDING_REVIEW
+        # Gửi checkout với biển số ra bị lệch để kích hoạt cảnh báo và chuyển PENDING_REVIEW
+        res_mismatch = client.post(
+            f"/api/v1/sessions/{session_id}/checkout",
+            json={"payment_method": "CASH", "exit_plate": "29A-999.99"},
+            headers=op_headers,
+        )
+        assert res_mismatch.status_code == 409, "Phải kích hoạt 409 Conflict khi lệch biển số."
+        print("   [OK] Phát hiện lệch biển số (409 Conflict), phiên tự động chuyển PENDING_REVIEW.")
+
+        # Thu gom Alert PLATE_MISMATCH tự động sinh để bảo đảm dọn dẹp sạch sẽ sau test
         db.commit()
+        auto_alert = (
+            db.query(Alert)
+            .filter(
+                Alert.alert_type == AlertType.PLATE_MISMATCH,
+                Alert.message.contains(session_data["session_code"]),
+            )
+            .order_by(Alert.id.desc())
+            .first()
+        )
+        if auto_alert:
+            created_alert_ids.append(auto_alert.id)
 
         resolve_payload = {
             "approved": True,
@@ -180,6 +198,7 @@ def run_operational_smoke_test():
         print("   [OK] Duyệt ngoại lệ lệch biển số thành công, phiên xe trở về trạng thái ACTIVE.")
 
         # Kiểm tra Audit Log được sinh tự động
+        db.commit()
         audit_entry = db.query(AuditLog).filter(
             AuditLog.resource_type == "parking_sessions",
             AuditLog.resource_id == str(session_id),
@@ -188,8 +207,8 @@ def run_operational_smoke_test():
         assert audit_entry is not None, "Audit Log phải tự động được ghi nhận sau khi duyệt lệch biển số!"
         print(f"   [OK] Audit Log được ghi nhận tự động vào bảng audit_logs (ID: {audit_entry.id}).")
 
-        # 3.7 Thu phí & Kết thúc phiên gửi xe (checkout)
-        checkout_payload = {"payment_method": "CASH"}
+        # 3.7 Thu phí & Kết thúc phiên gửi xe (checkout) - Bắt buộc cung cấp exit_plate đã duyệt
+        checkout_payload = {"payment_method": "CASH", "exit_plate": "29A-999.99"}
         res_checkout = client.post(f"/api/v1/sessions/{session_id}/checkout", json=checkout_payload, headers=op_headers)
         assert res_checkout.status_code == 200, f"Checkout thất bại: {res_checkout.text}"
         checkout_data = res_checkout.json()
@@ -291,4 +310,6 @@ def run_operational_smoke_test():
 
 
 if __name__ == "__main__":
+    from smoke_guard import require_test_database
+    require_test_database()
     run_operational_smoke_test()

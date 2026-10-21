@@ -133,6 +133,7 @@ CREATE TABLE `payments` (
     `transaction_code` VARCHAR(50) NULL UNIQUE,
     `paid_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `operator_id` INT NULL,
+    UNIQUE KEY `uq_payments_session` (`session_id`),
     INDEX `idx_payments_session` (`session_id`),
     INDEX `idx_payments_paid_at` (`paid_at`),
     CONSTRAINT `fk_payments_session` FOREIGN KEY (`session_id`) REFERENCES `parking_sessions`(`id`) ON DELETE RESTRICT,

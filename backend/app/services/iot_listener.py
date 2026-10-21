@@ -1,4 +1,6 @@
 import logging
+import math
+import secrets
 from datetime import datetime
 from typing import Any, Callable, Optional
 from sqlalchemy import func
@@ -87,6 +89,53 @@ class IoTListener:
         if hook not in self._rfid_hooks:
             self._rfid_hooks.append(hook)
 
+    def _verify_device_token(self, db: Session, device: Device, payload: dict, topic: str) -> bool:
+        """
+        Xác thực mật mã Token của thiết bị trong payload bản tin MQTT.
+        Bảo đảm chống giả mạo danh tính thiết bị và tấn công Timing Attack.
+        """
+        provided_token = payload.get("token") or payload.get("authToken") or payload.get("auth_token")
+        if not provided_token or not secrets.compare_digest(str(provided_token), str(device.auth_token)):
+            alert_msg = (
+                f"Cảnh báo an ninh: Phát hiện bản tin giả mạo hoặc Token không hợp lệ từ thiết bị '{device.id}' "
+                f"trên topic '{topic}'."
+            )
+            alert = Alert(
+                alert_type=AlertType.SYSTEM_ERROR,
+                severity=AlertSeverity.CRITICAL,
+                message=alert_msg,
+                device_id=device.id,
+                status=AlertStatus.NEW,
+            )
+            db.add(alert)
+            db.commit()
+            logger.error(f"[IoT Listener] {alert_msg}")
+            return False
+        return True
+
+    def _verify_device_message(self, db: Session, device: Device, payload: dict, topic: str) -> bool:
+        """Check the topic partition and device token for every inbound message."""
+        topic_site_id, topic_device_id, _ = parse_topic_info(topic)
+        if topic_device_id != device.id:
+            logger.warning("[IoT Listener] Topic device does not match: %s", topic)
+            return False
+        if topic_site_id and topic_site_id != device.site_id:
+            alert_msg = (
+                f"Cảnh báo sai phân vùng: Bản tin trên topic '{topic}' mang site '{topic_site_id}', "
+                f"khác với phân vùng đăng ký của thiết bị '{device.site_id}'."
+            )
+            db.add(Alert(
+                alert_type=AlertType.SYSTEM_ERROR,
+                severity=AlertSeverity.WARNING,
+                message=alert_msg,
+                device_id=device.id,
+                status=AlertStatus.NEW,
+            ))
+            db.commit()
+            logger.warning("[IoT Listener] %s", alert_msg)
+            return False
+        return self._verify_device_token(db, device, payload, topic)
+
     # ----------------------------------------------------
     # 1. XỬ LÝ BẢN TIN TRẠNG THÁI & NHỊP TIM (HEARTBEAT)
     # ----------------------------------------------------
@@ -101,7 +150,7 @@ class IoTListener:
             return
 
         if not isinstance(payload, dict):
-            logger.warning(f"[IoT Listener] Payload status không phải JSON dict: {payload}")
+            logger.warning("[IoT Listener] Payload status không phải JSON dict")
             return
 
         db: Session = SessionLocal()
@@ -111,12 +160,31 @@ class IoTListener:
                 logger.warning(f"[IoT Listener] Nhận status từ thiết bị chưa đăng ký: '{device_id}'")
                 return
 
-            device.last_heartbeat_at = func.now()
+            # Toàn bộ bản tin status (bao gồm Heartbeat online và LWT offline) BẮT BUỘC phải có Token hợp lệ
+            # nhằm ngăn chặn kẻ tấn công publish bản tin giả mạo đánh dấu thiết bị offline.
+            if not self._verify_device_message(db, device, payload, topic):
+                return
+
             raw_status = payload.get("status")
-            if isinstance(raw_status, str):
-                device.is_online = (raw_status.lower() != "offline")
+            is_offline = isinstance(raw_status, str) and raw_status.lower() == "offline"
+
+            if is_offline:
+                device.is_online = False
+                db.commit()
+                logger.info(f"[IoT Listener] Đã tiếp nhận LWT/Status Offline hợp lệ cho thiết bị '{device_id}' (online=False)")
+                return
+
+            device.last_heartbeat_at = func.now()
+            if device.status == DeviceStatus.ACTIVATED:
+                device.is_online = True
+            elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
+                device.is_online = False
+                logger.info(
+                    f"[IoT Listener] Thiết bị '{device_id}' đang ở trạng thái {device.status.value}, "
+                    f"ghi nhận nhịp tim nhưng giữ trạng thái offline (is_online=False)."
+                )
             else:
-                device.is_online = payload.get("isOnline", payload.get("is_online", True))
+                device.is_online = False
 
             if "fwVersion" in payload:
                 device.fw_version = payload["fwVersion"]
@@ -149,25 +217,30 @@ class IoTListener:
         4. Đồng bộ trạng thái ô đỗ (EMPTY <-> OCCUPIED).
         5. Bảo lưu trạng thái nếu ô đang bảo trì (MAINTENANCE) và sinh cảnh báo nếu có xe đỗ trái phép.
         """
-        _, device_id, _ = parse_topic_info(topic)
+        topic_site_id, device_id, _ = parse_topic_info(topic)
         if not device_id:
             logger.warning(f"[IoT Listener] Không thể xác định device_id từ topic: {topic}")
             return
 
         if not isinstance(payload, dict):
-            logger.warning(f"[IoT Listener] Payload telemetry không phải JSON dict: {payload}")
+            logger.warning("[IoT Listener] Payload telemetry không phải JSON dict")
             return
 
         slot_id = payload.get("slotId", payload.get("slot_id"))
         raw_distance = payload.get("distanceCm", payload.get("distance_cm"))
         if slot_id is None or raw_distance is None:
-            logger.warning(f"[IoT Listener] Bản tin telemetry thiếu slotId hoặc distanceCm: {payload}")
+            logger.warning("[IoT Listener] Bản tin telemetry thiếu slotId hoặc distanceCm")
             return
 
         try:
             distance_cm = round(float(raw_distance), 2)
         except (ValueError, TypeError):
-            logger.warning(f"[IoT Listener] Giá trị khoảng cách không hợp lệ: {raw_distance}")
+            logger.warning("[IoT Listener] Giá trị khoảng cách không hợp lệ")
+            return
+
+        # Kiểm tra tính hợp lệ của số đo cảm biến (phạm vi vật lý thực tế của cảm biến siêu âm)
+        if not math.isfinite(distance_cm) or distance_cm < 0.0 or distance_cm > 1000.0:
+            logger.warning(f"[IoT Listener] Khoảng cách cảm biến nằm ngoài phạm vi vật lý hợp lệ (0-1000cm): {distance_cm} cm.")
             return
 
         db: Session = SessionLocal()
@@ -175,6 +248,9 @@ class IoTListener:
             device = db.query(Device).filter(Device.id == device_id).first()
             if not device:
                 logger.warning(f"[IoT Listener] Bỏ qua telemetry từ thiết bị chưa đăng ký: '{device_id}'")
+                return
+
+            if not self._verify_device_message(db, device, payload, topic):
                 return
 
             # Kiểm soát vòng đời thiết bị nghiêm ngặt (Grill-Me đã chốt)
@@ -213,6 +289,29 @@ class IoTListener:
                 except Exception:
                     pass
 
+            # Kiểm tra ô đỗ và quyền sở hữu thiết bị (Slot Ownership Check)
+            slot = db.query(Slot).filter(Slot.id == slot_id).with_for_update().first()
+            if not slot:
+                logger.warning(f"[IoT Listener] Không tìm thấy ô đỗ '{slot_id}' trong CSDL.")
+                return
+
+            if not slot.device_id or slot.device_id != device.id:
+                alert_msg = (
+                    f"Thiết bị '{device.id}' gửi telemetry cho ô đỗ '{slot.id}' "
+                    f"nhưng ô này do thiết bị '{slot.device_id or 'Chưa gán'}' quản lý."
+                )
+                alert = Alert(
+                    alert_type=AlertType.SYSTEM_ERROR,
+                    severity=AlertSeverity.WARNING,
+                    message=alert_msg,
+                    device_id=device.id,
+                    status=AlertStatus.NEW,
+                )
+                db.add(alert)
+                db.commit()
+                logger.warning(f"[IoT Listener] {alert_msg}")
+                return
+
             # 1. Ghi log Telemetry vào bảng telemetry_logs
             telemetry_entry = TelemetryLog(
                 device_id=device.id,
@@ -226,64 +325,84 @@ class IoTListener:
             db.add(telemetry_entry)
 
             # 2. Cập nhật trạng thái ô đỗ trong bảng slots
-            slot = db.query(Slot).filter(Slot.id == slot_id).first()
             if slot:
                 slot.last_distance_cm = distance_cm
                 slot.last_updated_at = func.now()
 
+                active_session = db.query(ParkingSession).filter(
+                    ParkingSession.slot_id == slot.id,
+                    ParkingSession.status.in_([SessionStatus.ACTIVE, SessionStatus.PENDING_REVIEW]),
+                ).with_for_update().first()
+
                 # Kiểm tra trạng thái bảo trì quản trị (Grill-Me đã chốt)
-                if slot.status == SlotStatus.MAINTENANCE:
-                    if is_occupied:
-                        maint_alert = Alert(
-                            alert_type=AlertType.SYSTEM_ERROR,
-                            severity=AlertSeverity.WARNING,
-                            message=f"Phát hiện phương tiện đỗ trái phép tại ô đang bảo trì '{slot.id}' (Khoảng cách: {distance_cm} cm).",
-                            device_id=device.id,
-                            status=AlertStatus.NEW,
+                if active_session:
+                    slot.status = SlotStatus.OCCUPIED
+                    if not is_occupied:
+                        existing_alert = (
+                            db.query(Alert)
+                            .filter(
+                                Alert.session_id == active_session.id,
+                                Alert.alert_type == AlertType.SYSTEM_ERROR,
+                                Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                            )
+                            .first()
                         )
-                        db.add(maint_alert)
-                        logger.warning(f"[IoT Listener] Vi phạm đỗ xe tại ô bảo trì '{slot.id}'!")
+                        if not existing_alert:
+                            db.add(Alert(
+                                alert_type=AlertType.SYSTEM_ERROR,
+                                severity=AlertSeverity.WARNING,
+                                message=(
+                                    f"Cảm biến đo rỗng ({distance_cm} cm) nhưng ô '{slot.id}' đang có phiên gửi xe "
+                                    f"{active_session.status.value} (Mã phiên: {active_session.session_code})."
+                                ),
+                                device_id=device.id,
+                                session_id=active_session.id,
+                                status=AlertStatus.NEW,
+                            ))
+                elif slot.status == SlotStatus.MAINTENANCE:
+                    if is_occupied:
+                        existing_maint_alert = (
+                            db.query(Alert)
+                            .filter(
+                                Alert.device_id == device.id,
+                                Alert.alert_type == AlertType.SYSTEM_ERROR,
+                                Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                            )
+                            .all()
+                        )
+                        has_slot_maint_alert = any(f"'{slot.id}'" in (a.message or "") for a in existing_maint_alert)
+                        if not has_slot_maint_alert:
+                            maint_alert = Alert(
+                                alert_type=AlertType.SYSTEM_ERROR,
+                                severity=AlertSeverity.WARNING,
+                                message=f"Phát hiện phương tiện đỗ trái phép tại ô đang bảo trì '{slot.id}' (Khoảng cách: {distance_cm} cm).",
+                                device_id=device.id,
+                                status=AlertStatus.NEW,
+                            )
+                            db.add(maint_alert)
+                            logger.warning(f"[IoT Listener] Vi phạm đỗ xe tại ô bảo trì '{slot.id}'!")
                     # Giữ nguyên trạng thái MAINTENANCE
                 elif slot.status == SlotStatus.RESERVED:
                     # Giữ nguyên trạng thái RESERVED
                     pass
                 else:
-                    # Kiểm tra xem ô đỗ có đang gắn với phiên gửi xe ACTIVE hay không (Session-first Truth)
-                    active_session = db.query(ParkingSession).filter(
-                        ParkingSession.slot_id == slot.id,
-                        ParkingSession.status == SessionStatus.ACTIVE,
-                    ).first()
-
-                    if active_session:
-                        # Bảo vệ phiên xe đang diễn ra, giữ nguyên OCCUPIED
-                        slot.status = SlotStatus.OCCUPIED
-                        if not is_occupied:
-                            # Cảm biến đo rỗng bất thường khi xe đang trong phiên ACTIVE
-                            anomaly_alert = Alert(
-                                alert_type=AlertType.SYSTEM_ERROR,
-                                severity=AlertSeverity.WARNING,
-                                message=(
-                                    f"Cảm biến đo rỗng ({distance_cm} cm) nhưng ô '{slot.id}' đang có phiên gửi xe ACTIVE "
-                                    f"(Mã phiên: {active_session.session_code}, Biển số: {active_session.entry_plate or 'N/A'})."
-                                ),
-                                device_id=device.id,
-                                session_id=active_session.id,
-                                status=AlertStatus.NEW,
-                            )
-                            db.add(anomaly_alert)
-                            logger.warning(f"[IoT Listener] Bất thường: Ô '{slot.id}' có phiên ACTIVE nhưng cảm biến đo rỗng!")
-                    else:
-                        # Không có phiên xe: Tự động đồng bộ EMPTY <-> OCCUPIED
-                        new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
-                        if slot.status != new_status:
-                            logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
-                            slot.status = new_status
-            else:
-                logger.warning(f"[IoT Listener] Không tìm thấy ô đỗ '{slot_id}' trong CSDL.")
+                    new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
+                    if slot.status != new_status:
+                        logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
+                        slot.status = new_status
 
             # Cập nhật mốc nhận tín hiệu của thiết bị
             device.last_heartbeat_at = func.now()
-            device.is_online = True
+            if device.status == DeviceStatus.ACTIVATED:
+                device.is_online = True
+            elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
+                device.is_online = False
+                logger.info(
+                    f"[IoT Listener] Thiết bị '{device_id}' đang ở trạng thái {device.status.value}, "
+                    f"ghi nhận nhịp tim nhưng giữ trạng thái offline (is_online=False)."
+                )
+            else:
+                device.is_online = False
 
             db.commit()
             logger.debug(f"[IoT Listener] Đã lưu telemetry cho ô '{slot_id}': {distance_cm}cm (occupied={is_occupied})")
@@ -311,12 +430,12 @@ class IoTListener:
             return
 
         if not isinstance(payload, dict):
-            logger.warning(f"[IoT Listener] Payload rfid không phải JSON dict: {payload}")
+            logger.warning("[IoT Listener] Payload rfid không phải JSON dict")
             return
 
         card_uid = payload.get("cardUid", payload.get("card_uid"))
         if not card_uid:
-            logger.warning(f"[IoT Listener] Bản tin RFID thiếu cardUid: {payload}")
+            logger.warning("[IoT Listener] Bản tin RFID thiếu cardUid")
             return
 
         gate_id = payload.get("gate", payload.get("gate_id", "ENTRY"))
@@ -326,6 +445,10 @@ class IoTListener:
             device = db.query(Device).filter(Device.id == device_id).first()
             if not device:
                 logger.warning(f"[IoT Listener] Bỏ qua RFID từ thiết bị chưa đăng ký: '{device_id}'")
+                return
+
+            # Xác thực token thiết bị chống giả mạo
+            if not self._verify_device_message(db, device, payload, topic):
                 return
 
             if device.status != DeviceStatus.ACTIVATED:
@@ -383,7 +506,16 @@ class IoTListener:
                     logger.error(f"[IoT Listener] Lỗi thực thi RFID hook: {hook_err}", exc_info=True)
 
             device.last_heartbeat_at = func.now()
-            device.is_online = True
+            if device.status == DeviceStatus.ACTIVATED:
+                device.is_online = True
+            elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
+                device.is_online = False
+                logger.info(
+                    f"[IoT Listener] Thiết bị '{device_id}' đang ở trạng thái {device.status.value}, "
+                    f"ghi nhận nhịp tim nhưng giữ trạng thái offline (is_online=False)."
+                )
+            else:
+                device.is_online = False
             db.commit()
         except Exception as e:
             db.rollback()
@@ -400,15 +532,27 @@ class IoTListener:
         Cập nhật trạng thái lệnh (ACKED / FAILED) và thời điểm acked_at.
         """
         if not isinstance(payload, dict):
-            logger.warning(f"[IoT Listener] Payload ACK không phải JSON dict: {payload}")
+            logger.warning("[IoT Listener] Payload ACK không phải JSON dict")
             return
 
         _, device_id, _ = parse_topic_info(topic)
+        if not device_id:
+            logger.warning(f"[IoT Listener] Không thể xác định device_id từ topic: {topic}")
+            return
 
         from app.services.command_service import command_service
 
         db: Session = SessionLocal()
         try:
+            device = db.query(Device).filter(Device.id == device_id).first()
+            if not device:
+                logger.warning(f"[IoT Listener] Bỏ qua ACK từ thiết bị chưa đăng ký: '{device_id}'")
+                return
+
+            # Xác thực token thiết bị chống giả mạo
+            if not self._verify_device_message(db, device, payload, topic):
+                return
+
             command_service.process_ack(payload, db, topic_device_id=device_id)
         except Exception as e:
             db.rollback()
@@ -431,21 +575,17 @@ def setup_iot_listeners(client: MQTTService = mqtt_service) -> None:
     # 1. Đăng ký nhận Status / Heartbeat
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/status", iot_listener.handle_status)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/status", iot_listener.handle_status)
-    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/status", iot_listener.handle_status)
 
     # 2. Đăng ký nhận Telemetry cảm biến khoảng cách
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/telemetry", iot_listener.handle_telemetry)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/telemetry", iot_listener.handle_telemetry)
-    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/telemetry", iot_listener.handle_telemetry)
 
     # 3. Đăng ký nhận Sự kiện quẹt thẻ RFID
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/events/rfid", iot_listener.handle_rfid)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/events/rfid", iot_listener.handle_rfid)
-    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/events/rfid", iot_listener.handle_rfid)
 
     # 4. Đăng ký nhận Bản tin phản hồi ACK từ Barrier/ESP32
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/+/ack", iot_listener.handle_ack)
     client.subscribe(f"{settings.MQTT_BASE_TOPIC}/+/ack", iot_listener.handle_ack)
-    client.subscribe(f"{settings.MQTT_BASE_TOPIC}/devices/+/ack", iot_listener.handle_ack)
 
     logger.info("[IoT Listener] Đã đăng ký thành công toàn bộ IoT Listeners vào MQTTService.")

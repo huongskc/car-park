@@ -144,6 +144,7 @@ def run_iot_listener_smoke_test():
         print("\n[BƯỚC 2] Kiểm thử Nhận Bản tin Status / Heartbeat...")
         status_topic = f"parking/PTIT_ZONE_1/{TEST_DEVICE_ID}/status"
         status_payload = {
+            "token": "dtk_test_listener_token",
             "isOnline": True,
             "fwVersion": "1.2.0-beta",
             "ipAddress": "192.168.1.188",
@@ -165,6 +166,7 @@ def run_iot_listener_smoke_test():
         print("\n[BƯỚC 3] Kiểm thử Telemetry: Cảm biến phát hiện có xe (khoảng cách 11.2 cm <= 15.0 cm)...")
         telem_topic = f"parking/PTIT_ZONE_1/{TEST_DEVICE_ID}/telemetry"
         telem_payload_occupied = {
+            "token": "dtk_test_listener_token",
             "slotId": TEST_SLOT_ID,
             "distanceCm": 11.2,
             "bootId": "boot_101",
@@ -195,6 +197,7 @@ def run_iot_listener_smoke_test():
         # ----------------------------------------------------
         print("\n[BƯỚC 4] Kiểm thử Telemetry: Cảm biến phát hiện xe rời đi (khoảng cách 28.5 cm > 15.0 cm)...")
         telem_payload_empty = {
+            "token": "dtk_test_listener_token",
             "slotId": TEST_SLOT_ID,
             "distanceCm": 28.5,
             "bootId": "boot_101",
@@ -267,7 +270,7 @@ def run_iot_listener_smoke_test():
         rfid_topic = f"parking/PTIT_ZONE_1/{TEST_DEVICE_ID}/events/rfid"
 
         # 7.1 Thẻ không tồn tại
-        iot_listener.handle_rfid(rfid_topic, {"cardUid": "CARD_UNKNOWN_99", "gate": "ENTRY"})
+        iot_listener.handle_rfid(rfid_topic, {"token": "dtk_test_listener_token", "cardUid": "CARD_UNKNOWN_99", "gate": "ENTRY"})
         db.commit()
         alert_unknown = (
             db.query(Alert)
@@ -278,7 +281,7 @@ def run_iot_listener_smoke_test():
         print(f"   [OK] Phát hiện thẻ không tồn tại: '{alert_unknown.message}'")
 
         # 7.2 Thẻ bị khóa
-        iot_listener.handle_rfid(rfid_topic, {"cardUid": TEST_CARD_LOCKED, "gate": "ENTRY"})
+        iot_listener.handle_rfid(rfid_topic, {"token": "dtk_test_listener_token", "cardUid": TEST_CARD_LOCKED, "gate": "ENTRY"})
         db.commit()
         alert_locked = (
             db.query(Alert)
@@ -295,7 +298,7 @@ def run_iot_listener_smoke_test():
             hook_called.append((dev_id, payload))
 
         iot_listener.register_rfid_hook(sample_hook)
-        iot_listener.handle_rfid(rfid_topic, {"cardUid": TEST_CARD_VALID, "gate": "ENTRY"})
+        iot_listener.handle_rfid(rfid_topic, {"token": "dtk_test_listener_token", "cardUid": TEST_CARD_VALID, "gate": "ENTRY"})
         assert len(hook_called) == 1
         assert hook_called[0][1]["cardUid"] == TEST_CARD_VALID
         print("   [OK] Thẻ hợp lệ được chấp nhận và kích hoạt thành công hook xử lý tiếp theo!")
@@ -309,7 +312,7 @@ def run_iot_listener_smoke_test():
 
         # Giả lập bắn message qua paho-mqtt mock
         mock_msg = mqtt.MQTTMessage(topic=f"parking/PTIT_ZONE_1/{TEST_DEVICE_ID}/status".encode())
-        mock_msg.payload = b'{"isOnline": true, "fwVersion": "2.0.0"}'
+        mock_msg.payload = b'{"token": "dtk_test_listener_token", "isOnline": true, "fwVersion": "2.0.0"}'
         mock_mqtt._on_message(mock_mqtt.client, None, mock_msg)
 
         db.commit()
@@ -327,4 +330,6 @@ def run_iot_listener_smoke_test():
 
 
 if __name__ == "__main__":
+    from smoke_guard import require_test_database
+    require_test_database()
     run_iot_listener_smoke_test()

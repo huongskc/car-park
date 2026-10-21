@@ -43,11 +43,10 @@ class DeviceConfigOut(BaseModel):
 
 
 class DeviceOut(BaseModel):
-    """Schema trả về thông tin chi tiết thiết bị IoT."""
+    """Schema trả về thông tin chi tiết thiết bị IoT cho danh sách và chi tiết thông thường (không lộ auth_token)."""
     id: str
     name: str
     site_id: str
-    auth_token: str
     status: DeviceStatus
     is_online: bool
     ip_address: Optional[str] = None
@@ -61,8 +60,14 @@ class DeviceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DeviceRegisterOut(DeviceOut):
+    """Schema trả về khi đăng ký thiết bị mới (chỉ cấp auth_token duy nhất một lần khi onboarding)."""
+    auth_token: str
+
+
 __all__ = [
     "DeviceRegister",
+    "DeviceRegisterOut",
     "DeviceConfigUpdate",
     "DeviceStatusChange",
     "DeviceConfigOut",

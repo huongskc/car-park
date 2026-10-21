@@ -253,8 +253,8 @@ Authorization: Bearer <access_token>
 
 #### `PATCH /sessions/{id}/resolve-plate` — Duyệt ngoại lệ lệch biển số lúc ra
 - **Nghiệp vụ**:
-  - `approved: true`: Cho phép xe ra, cập nhật trạng thái về `ACTIVE` để tiếp tục checkout.
-  - `approved: false`: Từ chối cho ra, phiên chuyển sang `CANCELLED` và tự động giải phóng ô đỗ về `EMPTY`.
+  - `approved: true`: Cho phép xe ra, cập nhật trạng thái về `ACTIVE` để tiếp tục checkout với đúng biển số ra đã duyệt.
+  - `approved: false`: Từ chối cho ra. Phiên giữ nguyên `PENDING_REVIEW` và ô đỗ giữ nguyên `OCCUPIED` (do phương tiện chưa được xác minh rời bãi). Lưu lý do và ghi nhận audit log.
 - **Body**:
   ```json
   {
@@ -268,6 +268,26 @@ Authorization: Bearer <access_token>
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"approved\": true, \"note\": \"Đã đối chiếu giấy tờ xe trùng khớp\"}"
+  ```
+
+#### `POST /sessions/{id}/cancel` — Hủy phiên gửi xe ngoại lệ và giải phóng ô (Chỉ dành cho ADMIN)
+- **Nghiệp vụ**:
+  - Lối xử lý quản trị dành riêng cho `ADMIN` khi phương tiện gặp sự cố đặc biệt hoặc đã được dời khỏi bãi thủ công.
+  - Điều kiện: Phiên phải ở trạng thái `PENDING_REVIEW` và chưa thanh toán (`is_paid = false`). Bắt buộc `confirmed_exit: true`.
+  - Kết quả: Phiên chuyển `CANCELLED`, ô đỗ gắn với phiên được giải phóng về `EMPTY`, ghi vết kiểm toán bắt buộc vào `audit_logs`.
+- **Body**:
+  ```json
+  {
+    "reason": "Xe đã dời bãi ngoài thực địa sau khi đối chiếu giấy tờ",
+    "confirmed_exit": true
+  }
+  ```
+- **cURL Example**:
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/sessions/105/cancel" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"reason\": \"Xe đã dời bãi ngoài thực địa\", \"confirmed_exit\": true}"
   ```
 
 #### `POST /sessions/{id}/checkout` — Thu phí & Kết thúc phiên xe
@@ -297,7 +317,7 @@ Authorization: Bearer <access_token>
 ### 2.6 Phân hệ Cảnh báo & Sự cố (`/alerts`) — Quyền: `OPERATOR`, `ADMIN`
 
 #### `GET /alerts` — Danh sách cảnh báo
-- **Query Params**: `skip`, `limit`, `status` (`NEW`, `ACKNOWLEDGED`, `RESOLVED`, `DISMISSED`), `severity` (`INFO`, `WARNING`, `CRITICAL`), `alert_type` (`PLATE_MISMATCH`, `UNAUTHORIZED_CARD`, `SYSTEM_ERROR`, `CAPACITY_FULL`).
+- **Query Params**: `skip`, `limit`, `status` (`NEW`, `ACKNOWLEDGED`, `RESOLVED`, `DISMISSED`), `severity` (`INFO`, `WARNING`, `CRITICAL`), `alert_type` (`PLATE_MISMATCH`, `UNAUTHORIZED_CARD`, `DEVICE_OFFLINE`, `LONG_OCCUPANCY`, `SYSTEM_ERROR`).
 - **cURL Example**:
   ```bash
   curl -X GET "http://localhost:8000/api/v1/alerts?status=NEW&severity=WARNING" \
@@ -316,8 +336,7 @@ Authorization: Bearer <access_token>
 - **Body**:
   ```json
   {
-    "status": "RESOLVED",
-    "resolved_note": "Cảm biến đã được vệ sinh và hoạt động lại bình thường"
+    "status": "RESOLVED"
   }
   ```
 - **cURL Example**:
@@ -325,7 +344,7 @@ Authorization: Bearer <access_token>
   curl -X PATCH "http://localhost:8000/api/v1/alerts/12/resolve" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"status\": \"RESOLVED\", \"resolved_note\": \"Đã xử lý xong\"}"
+    -d "{\"status\": \"RESOLVED\"}"
   ```
 
 ---
@@ -378,7 +397,7 @@ Authorization: Bearer <access_token>
   ```
 
 #### `PATCH /devices/{id}/config` — Cập nhật cấu hình từ xa (Chỉ ADMIN)
-- **Nghiệp vụ**: Cập nhật CSDL, tự động tăng `version = version + 1`, và bắn bản tin MQTT `parking/{site_id}/{device_id}/config` đồng bộ xuống ESP32.
+- **Nghiệp vụ**: Cập nhật CSDL, tự động tăng `version = version + 1`, và bắn bản tin MQTT `parking/{site_id}/{device_id}/config` đồng bộ xuống ESP32. Nếu publish MQTT thất bại, trả về HTTP `503 Service Unavailable`.
 - **Body**:
   ```json
   {
@@ -394,6 +413,15 @@ Authorization: Bearer <access_token>
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"distance_threshold_cm\": 18.5, \"servo_open_time_sec\": 12}"
+  ```
+
+#### `POST /devices/{id}/resend-config` — Gửi lại cấu hình qua MQTT (Chỉ ADMIN)
+- **Nghiệp vụ**: Gửi lại bản tin cấu hình đã lưu trong CSDL xuống vi điều khiển ESP32 khi lần cập nhật trước bị lỗi kết nối Broker.
+- **Response `200 OK`**: `{"status": "PUBLISHED", "device_id": "ESP32_GATE_01", "version": 2, "topic": "..."}`
+- **cURL Example**:
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/devices/ESP32_GATE_01/resend-config" \
+    -H "Authorization: Bearer $ADMIN_TOKEN"
   ```
 
 ---

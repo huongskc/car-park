@@ -19,6 +19,7 @@ from app.schemas.slot_schema import (
 from app.schemas.session_schema import (
     SessionCreate,
     SessionResolvePlate,
+    SessionCancel,
     SessionCheckout,
     SessionOut,
 )
@@ -34,6 +35,7 @@ from app.schemas.audit_schema import (
 )
 from app.schemas.device_schema import (
     DeviceRegister,
+    DeviceRegisterOut,
     DeviceConfigUpdate,
     DeviceStatusChange,
     DeviceConfigOut,
@@ -62,6 +64,7 @@ __all__ = [
     # Sessions
     "SessionCreate",
     "SessionResolvePlate",
+    "SessionCancel",
     "SessionCheckout",
     "SessionOut",
     # Payments
@@ -73,6 +76,7 @@ __all__ = [
     "AuditLogOut",
     # Devices & IoT Lifecycle
     "DeviceRegister",
+    "DeviceRegisterOut",
     "DeviceConfigUpdate",
     "DeviceStatusChange",
     "DeviceConfigOut",

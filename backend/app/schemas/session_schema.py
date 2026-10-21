@@ -18,6 +18,12 @@ class SessionResolvePlate(BaseModel):
     note: str = Field(..., min_length=1, max_length=255, description="Ghi chú / Lý do quyết định của nhân viên", examples=["Đã kiểm tra vé và đối chiếu căn cước công dân"])
 
 
+class SessionCancel(BaseModel):
+    """Schema hủy phiên gửi xe ngoại lệ dành riêng cho Quản trị viên (ADMIN)."""
+    reason: str = Field(..., min_length=3, max_length=255, description="Lý do quản trị viên hủy phiên gửi xe", examples=["Xe đã được giải phóng thủ công ngoài thực địa"])
+    confirmed_exit: bool = Field(..., description="Xác nhận phương tiện đã thực tế rời khỏi bãi đỗ")
+
+
 class SessionCheckout(BaseModel):
     """Schema thanh toán phí gửi xe và kết thúc phiên."""
     payment_method: PaymentMethod = Field(default=PaymentMethod.CASH, description="Phương thức thanh toán (CASH, SIMULATED_MOMO)")
@@ -52,6 +58,7 @@ class SessionOut(BaseModel):
 __all__ = [
     "SessionCreate",
     "SessionResolvePlate",
+    "SessionCancel",
     "SessionCheckout",
     "SessionOut",
 ]

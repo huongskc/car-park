@@ -56,6 +56,14 @@ def run_device_lifecycle_smoke_test():
     client = TestClient(app)
     db = SessionLocal()
 
+    # Giả lập MQTT Publish trả về thành công (rc=0) cho các Unit/API Tests khi không chạy Broker nền
+    from unittest.mock import MagicMock
+    from app.services.mqtt_service import mqtt_service
+    orig_publish = mqtt_service.publish
+    mock_msg = MagicMock()
+    mock_msg.rc = 0
+    mqtt_service.publish = MagicMock(return_value=mock_msg)
+
     test_device_id = "ESP32_TEST_GATE_99"
     created_devices = [test_device_id]
 
@@ -315,9 +323,12 @@ def run_device_lifecycle_smoke_test():
         print("==================================================")
 
     finally:
+        mqtt_service.publish = orig_publish
         cleanup_device_test_data(db, created_devices)
         db.close()
 
 
 if __name__ == "__main__":
+    from smoke_guard import require_test_database
+    require_test_database()
     run_device_lifecycle_smoke_test()

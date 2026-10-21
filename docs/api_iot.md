@@ -11,11 +11,14 @@
 | :--- | :--- | :--- |
 | **MQTT Broker Host** | `localhost` hoặc IP Server Backend trong mạng LAN (VD: `192.168.1.100`) | ESP32 và máy chủ Backend phải cùng lớp mạng Wi-Fi |
 | **Port** | `1883` | TCP chuẩn (Không mã hóa SSL trong môi trường Lab) |
+| **Authentication** | Bắt buộc (`allow_anonymous false`) | Mosquitto quản lý qua `mosquitto_passwd` và `acl.conf` |
+| **Backend Username / Password** | `backend_admin` / `{CONFIGURED_IN_ENV}` | Quyền toàn cục: `readwrite parking/#` (Mật khẩu bí mật nạp qua `.env`) |
+| **ESP32 Username / Password** | `{DEVICE_ID}` / `{AUTH_TOKEN}` (hoặc thiết lập mẫu) | ACL giới hạn Topic Namespace theo `%u` |
 | **Client ID** | `ESP32_{DEVICE_ID}` (VD: `ESP32_GATE_01`) | Khuyến nghị duy nhất trên toàn mạng Broker |
 | **Keep Alive** | `30` giây | Chu kỳ ping kiểm tra kết nối tầng giao vận MQTT |
-| **LWT (Last Will & Testament)** | Bắt buộc cấu hình khi gọi `connect()` | Broker tự động bắn khi ESP32 mất nguồn hoặc đứt Wi-Fi |
+| **LWT (Last Will & Testament)** | Bắt buộc cấu hình khi gọi `connect()` | Broker tự động phát khi ESP32 mất nguồn hoặc đứt kết nối TCP |
 | **LWT Topic** | `parking/{site_id}/{device_id}/status` | Ví dụ: `parking/PTIT_ZONE_1/ESP32_GATE_01/status` |
-| **LWT Payload** | `{"status": "offline"}` | Báo cho Backend cập nhật ngay `is_online = False` |
+| **LWT Payload** | `{"status": "offline", "token": "{auth_token}"}` | Bắt buộc kèm `token` để xác thực, cập nhật `is_online = False` |
 | **LWT QoS / Retain** | `QoS 1`, `Retain = False` | Đảm bảo chuyển giao tin cậy |
 
 ---
@@ -52,12 +55,14 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
 - **Payload Schema (JSON)**:
   ```json
   {
+    "token": "dtk_a8f9c1d2e3b4567890abcdef",
     "status": "online",
     "fwVersion": "1.0.0",
     "ipAddress": "192.168.1.50"
   }
   ```
 - **Diễn giải trường**:
+  - `token`: Bắt buộc đối với toàn bộ bản tin trạng thái nhịp tim (`"online"`) cũng như bản tin ngắt kết nối đột ngột LWT (`"offline"`). Backend luôn đối chiếu mật mã Token qua `secrets.compare_digest` trước khi xử lý nhằm ngăn chặn triệt để hành vi giả mạo bản tin đánh sập trạng thái thiết bị khác.
   - `status`: Bắt buộc. `"online"` (hoặc `"offline"` trong bản tin LWT).
   - `fwVersion`: Chuỗi phiên bản phần mềm (VD: `"1.0.0"`).
   - `ipAddress`: Địa chỉ IP cấp phát qua DHCP để hỗ trợ quản trị từ xa.
@@ -72,6 +77,7 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
 - **Payload Schema (JSON)**:
   ```json
   {
+    "token": "dtk_a8f9c1d2e3b4567890abcdef",
     "slotId": "SLOT_A1",
     "distanceCm": 14.5,
     "bootId": "boot_101",
@@ -80,6 +86,7 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
   }
   ```
 - **Diễn giải trường**:
+  - `token`: Bắt buộc. Mã xác thực `auth_token` của thiết bị.
   - `slotId`: Mã định danh ô đỗ xe trong cơ sở dữ liệu (VD: `"SLOT_A1"`).
   - `distanceCm`: Khoảng cách đo bằng centimet (số thực float, làm tròn 2 chữ số).
   - `bootId`: Mã phiên khởi động của ESP32 (tuỳ chọn, phục vụ theo dõi watchdog).
@@ -100,12 +107,14 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
 - **Payload Schema (JSON)**:
   ```json
   {
+    "token": "dtk_a8f9c1d2e3b4567890abcdef",
     "cardUid": "A1B2C3D4",
     "gate": "GATE_IN",
     "readAt": "2026-10-17T15:30:05Z"
   }
   ```
 - **Diễn giải trường**:
+  - `token`: Bắt buộc. Mã xác thực `auth_token` của thiết bị.
   - `cardUid`: Chuỗi Hex UID in hoa không có dấu cách (VD: `"A1B2C3D4"` hoặc `"E28011052000"`).
   - `gate`: Mã cổng quẹt thẻ, nhận 1 trong 2 giá trị: `"GATE_IN"` (cổng vào) hoặc `"GATE_OUT"` (cổng ra).
   - `readAt`: Mốc thời gian ISO-8601 tại lúc quẹt thẻ.
@@ -120,6 +129,7 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
 - **Payload Schema (JSON)**:
   ```json
   {
+    "token": "dtk_a8f9c1d2e3b4567890abcdef",
     "commandId": "cmd_4fa7b89e12c4",
     "gate": "GATE_IN",
     "status": "SUCCESS",
@@ -127,6 +137,7 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
   }
   ```
 - **Diễn giải trường**:
+  - `token`: Bắt buộc. Mã xác thực `auth_token` của thiết bị.
   - `commandId`: Bắt buộc. Mã lệnh nhận được từ bản tin `commands` của Backend.
   - `gate`: Cổng thực thi (`"GATE_IN"` hoặc `"GATE_OUT"`).
   - `status`: Bắt buộc. `"SUCCESS"` (thành công) hoặc `"FAILED"` (thất bại/kẹt cơ khí).
@@ -201,17 +212,23 @@ ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối
    - Tuyệt đối **không sử dụng `delay()`** trong hàm `loop()`.
    - Sử dụng biến mốc thời gian `millis()` để kiểm tra chu kỳ gửi Heartbeat và Telemetry, tránh làm nghẽn hàm xử lý callback của MQTT `client.loop()`.
 
-2. **Cơ chế Tự phục hồi Kết nối (Auto-Reconnect)**:
+2. **Cơ chế Tự phục hồi Kết nối (Auto-Reconnect) & Cấu hình LWT có Token**:
    ```cpp
    void reconnectMQTT() {
        while (!client.connected()) {
-           // Đăng ký kết nối kèm bản tin LWT chuẩn
-           if (client.connect(DEVICE_ID, "parking/PTIT_ZONE_1/ESP32_GATE_01/status", 1, false, "{\"status\":\"offline\"}")) {
-               // Đăng ký lại các topic điều khiển
-               client.subscribe("parking/PTIT_ZONE_1/ESP32_GATE_01/commands");
-               client.subscribe("parking/PTIT_ZONE_1/ESP32_GATE_01/config");
-               // Bắn ngay bản tin online
-               client.publish("parking/PTIT_ZONE_1/ESP32_GATE_01/status", "{\"status\":\"online\"}", 1);
+           // Bản tin LWT ngắt kết nối bắt buộc phải kèm Token định danh chống mạo danh
+           String lwtPayload = "{\"status\":\"offline\",\"token\":\"" + String(DEVICE_TOKEN) + "\"}";
+           String lwtTopic = "parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/status";
+
+           // Đăng ký kết nối: client.connect(clientId, username, password, willTopic, willQos, willRetain, willMessage)
+           if (client.connect(DEVICE_ID, DEVICE_ID, DEVICE_TOKEN, lwtTopic.c_str(), 1, false, lwtPayload.c_str())) {
+               // Đăng ký lại các topic nhận lệnh điều khiển và cấu hình
+               client.subscribe(("parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/commands").c_str());
+               client.subscribe(("parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/config").c_str());
+
+               // Bắn ngay bản tin online kèm token
+               String onlinePayload = "{\"status\":\"online\",\"token\":\"" + String(DEVICE_TOKEN) + "\"}";
+               client.publish(lwtTopic.c_str(), onlinePayload.c_str(), 1);
            } else {
                delay(3000); // Đợi 3 giây trước khi thử lại
            }

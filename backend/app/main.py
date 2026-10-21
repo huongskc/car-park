@@ -9,12 +9,15 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+logger = logging.getLogger("smart_parking.main")
+
 from app.config import settings
-from app.services import mqtt_service, setup_iot_listeners, command_service
+from app.services import mqtt_service, setup_iot_listeners, command_service, device_service
 from app.routers import (
     auth_router,
     users_router,
@@ -36,20 +39,29 @@ async def lifespan(app: FastAPI):
       và chạy background task dọn dẹp các lệnh điều khiển quá hạn (Timeout Sweeper).
     - Shutdown: Ngắt kết nối và giải phóng tài nguyên an toàn.
     """
+    # Kiểm tra tính toàn vẹn cấu hình MQTT bảo mật khi khởi động (Fail-Fast)
+    if settings.MQTT_USERNAME and (settings.MQTT_PASSWORD is None or not str(settings.MQTT_PASSWORD).strip()) and not settings.TESTING:
+        raise RuntimeError(
+            f"[CRITICAL CONFIG ERROR] Cấu hình thiếu MQTT_PASSWORD cho tài khoản '{settings.MQTT_USERNAME}'. "
+            f"Do Mosquitto Broker đã bật xác thực (allow_anonymous false), vui lòng thiết lập biến môi trường "
+            f"MQTT_PASSWORD trong file .env trước khi khởi động backend."
+        )
+
     setup_iot_listeners()
     mqtt_service.start()
 
-    async def _command_timeout_sweeper():
+    async def _system_sweeper():
         while True:
             try:
-                await asyncio.sleep(20)
-                command_service.expire_stale_commands(timeout_seconds=30)
+                await asyncio.sleep(15)
+                await asyncio.to_thread(command_service.expire_stale_commands, timeout_seconds=30)
+                await asyncio.to_thread(device_service.expire_stale_devices, timeout_seconds=settings.HEARTBEAT_TIMEOUT_SEC)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"[System Sweeper] Lỗi tác vụ nền dọn dẹp lệnh/thiết bị quá hạn: {e}", exc_info=True)
 
-    sweeper_task = asyncio.create_task(_command_timeout_sweeper())
+    sweeper_task = asyncio.create_task(_system_sweeper())
     yield
     sweeper_task.cancel()
     try:
@@ -112,13 +124,28 @@ def root_endpoint():
 @app.get(
     "/health",
     tags=["Root & Health"],
-    summary="Health check endpoint",
+    summary="Health check endpoint (Liveness & Readiness)",
 )
 def health_check():
-    """Health check dành cho monitoring và container orchestrator."""
+    """Health check dành cho monitoring và container orchestrator (Liveness & Readiness)."""
+    from app.database import engine
+    from sqlalchemy import text
+
+    db_ok = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception as e:
+        logger.warning(f"[Health Check] Lỗi kết nối CSDL: {e}")
+
+    mqtt_ok = mqtt_service.is_connected
+
     return {
-        "status": "healthy",
-        "mqtt_connected": mqtt_service.is_connected,
+        "status": "healthy" if db_ok else "unhealthy",
+        "liveness": db_ok,
+        "mqtt_connected": mqtt_ok,
+        "mqtt_status": "connected" if mqtt_ok else "disconnected",
     }
 
 

@@ -29,6 +29,11 @@ class MQTTService:
                 username=settings.MQTT_USERNAME,
                 password=settings.MQTT_PASSWORD,
             )
+        elif settings.MQTT_USERNAME and not settings.MQTT_PASSWORD:
+            logger.warning(
+                f"[MQTT CONFIG WARNING] Đã cấu hình MQTT_USERNAME='{settings.MQTT_USERNAME}' nhưng thiếu MQTT_PASSWORD. "
+                f"Client sẽ kết nối không mật khẩu (có thể bị Mosquitto Broker từ chối nếu allow_anonymous false)."
+            )
 
         # Trạng thái kết nối
         self._is_connected: bool = False
@@ -74,7 +79,15 @@ class MQTTService:
                 logger.info(f"[MQTT] Đã re-subscribe topic: {topic}")
         else:
             self._is_connected = False
-            logger.error(f"[MQTT] Kết nối Broker thất bại. Reason Code: {reason_code}")
+            rc_val = getattr(reason_code, "value", reason_code)
+            rc_str = str(reason_code).lower()
+            if rc_val in (4, 5, 134, 135) or "authoris" in rc_str or "bad user" in rc_str or "credential" in rc_str:
+                logger.critical(
+                    f"[MQTT CRITICAL] Kết nối bị Mosquitto Broker từ chối do sai hoặc thiếu Username/Password "
+                    f"(Reason Code: {reason_code}). Vui lòng kiểm tra MQTT_USERNAME và MQTT_PASSWORD trong file .env."
+                )
+            else:
+                logger.error(f"[MQTT] Kết nối Broker thất bại. Reason Code: {reason_code}")
 
     def _on_disconnect(
         self,
@@ -110,15 +123,19 @@ class MQTTService:
         except Exception:
             payload = raw_payload
 
-        logger.debug(f"[MQTT IN] Topic: {topic} | Payload: {raw_payload[:120]}")
+        logger.debug("[MQTT IN] Topic: %s | Payload bytes: %d", topic, len(message.payload))
 
-        # Dispatch tin nhắn tới các handlers khớp với topic
+        # Dispatch tin nhắn tới các handlers khớp với topic (có khử trùng callback)
         dispatched = False
+        executed_callbacks: set[Callable[[str, Any], None]] = set()
         for pattern, callbacks in self._handlers.items():
             if mqtt.topic_matches_sub(pattern, topic):
                 for cb in callbacks:
+                    if cb in executed_callbacks:
+                        continue
                     try:
                         cb(topic, payload)
+                        executed_callbacks.add(cb)
                         dispatched = True
                     except Exception as e:
                         logger.error(f"[MQTT ERROR] Lỗi khi thực thi handler cho topic '{topic}': {e}", exc_info=True)

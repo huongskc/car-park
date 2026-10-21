@@ -1,0 +1,18 @@
+# ==============================================================================
+# Mosquitto Password File Template — Smart Parking System
+# Cấu trúc: username:$7$101$<base64_salt>$<base64_hash> (PBKDF2-HMAC-SHA512)
+# ==============================================================================
+# Hướng dẫn khởi tạo tệp mật khẩu cho môi trường Production / Staging:
+#
+# Cách 1: Sử dụng công cụ mosquitto_passwd chính thức của Mosquitto:
+#   mosquitto_passwd -c deployment/mosquitto_passwd backend_admin
+#   mosquitto_passwd -b deployment/mosquitto_passwd ESP32_GATE_01 <secret_token_1>
+#   mosquitto_passwd -b deployment/mosquitto_passwd ESP32_SLOT_01 <secret_token_2>
+#
+# Cách 2: Sinh hash bằng thư viện hashlib của Python 3:
+#   python -c "import hashlib, base64, os; s=os.urandom(16); k=hashlib.pbkdf2_hmac('sha512', b'<password>', s, 101); print('user:$7$101$' + base64.b64encode(s).decode() + '$' + base64.b64encode(k).decode())"
+# ==============================================================================
+# Mẫu tài khoản tham khảo:
+# backend_admin:$7$101$...
+# ESP32_GATE_01:$7$101$...
+# ESP32_SLOT_01:$7$101$...

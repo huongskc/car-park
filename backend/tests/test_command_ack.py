@@ -92,6 +92,14 @@ def run_command_ack_smoke_test():
     client = TestClient(app)
     db = SessionLocal()
 
+    # Giả lập MQTT Publish trả về thành công (rc=0) cho các Unit/API Tests khi không chạy Broker nền
+    from unittest.mock import MagicMock
+    from app.services.mqtt_service import mqtt_service
+    orig_publish = mqtt_service.publish
+    mock_msg = MagicMock()
+    mock_msg.rc = 0
+    mqtt_service.publish = MagicMock(return_value=mock_msg)
+
     try:
         # Dọn dẹp sạch trước khi chạy
         cleanup_test_data(db)
@@ -259,6 +267,7 @@ def run_command_ack_smoke_test():
 
         # 4.2 Giả lập ESP32 hoàn tất cơ khí và gửi ACK SUCCESS lên topic MQTT
         ack_success_payload = {
+            "token": "dtk_test_cmd_token_123",
             "commandId": cmd_close_id,
             "gate": "GATE_OUT",
             "action": "CLOSE",
@@ -292,6 +301,7 @@ def run_command_ack_smoke_test():
         cmd_fail_id = res_cmd_fail.json()["id"]
 
         ack_failed_payload = {
+            "token": "dtk_test_cmd_token_123",
             "commandId": cmd_fail_id,
             "status": "FAILED",
             "reason": "Ultrasonic detected vehicle still underneath barrier",
@@ -376,6 +386,7 @@ def run_command_ack_smoke_test():
         print("======================================================================")
 
     finally:
+        mqtt_service.publish = orig_publish
         print("\n[DỌN DẸP] Tiến hành làm sạch dữ liệu kiểm thử trong CSDL...")
         cleanup_test_data(db)
         db.close()
@@ -383,4 +394,6 @@ def run_command_ack_smoke_test():
 
 
 if __name__ == "__main__":
+    from smoke_guard import require_test_database
+    require_test_database()
     run_command_ack_smoke_test()

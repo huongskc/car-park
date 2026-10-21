@@ -7,7 +7,7 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(Integer, ForeignKey("parking_sessions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    session_id = Column(Integer, ForeignKey("parking_sessions.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
     payment_method = Column(Enum(PaymentMethod), nullable=False, default=PaymentMethod.CASH)
     payment_status = Column(Enum(PaymentStatus), nullable=False, default=PaymentStatus.PAID)

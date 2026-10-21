@@ -47,7 +47,15 @@ class CommandService:
                 detail=f"Không tìm thấy thiết bị có ID '{device_id}'.",
             )
 
-        # 2. Kiểm tra an toàn thiết bị (Hardware Safety Lock)
+        # 2. Phân quyền theo mức độ rủi ro (Risk-based RBAC: Kiểm tra trước trạng thái phần cứng)
+        if payload.action in [CommandAction.REBOOT, CommandAction.UPDATE_CONFIG]:
+            if current_user.role != UserRole.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Chỉ Quản trị viên (ADMIN) mới có quyền thực thi lệnh kỹ thuật '{payload.action.value}'.",
+                )
+
+        # 3. Kiểm tra an toàn thiết bị (Hardware Safety Lock & Lifecycle)
         if device.status == DeviceStatus.DECOMMISSIONED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -60,19 +68,34 @@ class CommandService:
                 detail=f"Thiết bị '{device_id}' đang bị tạm ngưng hoạt động (SUSPENDED), vui lòng khôi phục trước khi phát lệnh.",
             )
 
+        if device.status != DeviceStatus.ACTIVATED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Chỉ có thể phát lệnh điều khiển cho thiết bị đã kích hoạt (ACTIVATED). Trạng thái hiện tại của '{device_id}': {device.status.value}.",
+            )
+
+        # Kiểm tra tính tươi mới của nhịp tim (Heartbeat Freshness Check)
+        if device.is_online:
+            is_stale = False
+            if device.last_heartbeat_at:
+                is_stale = (datetime.now() - device.last_heartbeat_at).total_seconds() > settings.HEARTBEAT_TIMEOUT_SEC
+            elif device.created_at:
+                is_stale = (datetime.now() - device.created_at).total_seconds() > settings.HEARTBEAT_TIMEOUT_SEC
+
+            if is_stale:
+                device.is_online = False
+                db.commit()
+                db.refresh(device)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Thiết bị '{device_id}' đã quá hạn nhịp tim ({settings.HEARTBEAT_TIMEOUT_SEC}s) và được đánh dấu ngoại tuyến (Offline), không thể tiếp nhận lệnh.",
+                )
+
         if not device.is_online:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Thiết bị '{device_id}' đang ngoại tuyến (Offline), không thể tiếp nhận lệnh điều khiển thời gian thực.",
             )
-
-        # 3. Phân quyền theo mức độ rủi ro (Risk-based RBAC)
-        if payload.action in [CommandAction.REBOOT, CommandAction.UPDATE_CONFIG]:
-            if current_user.role != UserRole.ADMIN:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Chỉ Quản trị viên (ADMIN) mới có quyền thực thi lệnh kỹ thuật '{payload.action.value}'.",
-                )
 
         # 4. Khởi tạo bản ghi Command mới
         command_id = f"cmd_{secrets.token_hex(8)}"
@@ -112,16 +135,31 @@ class CommandService:
             "reason": payload.reason,
             "sentAt": datetime.now().isoformat(),
         }
+        publish_error = None
         try:
-            mqtt_service.publish(command_topic, mqtt_payload, qos=1)
-            logger.info(f"[Command Service] Đã phát lệnh '{command_id}' ({payload.action.value}) tới topic '{command_topic}'")
+            msg_info = mqtt_service.publish(command_topic, mqtt_payload, qos=1)
+            if getattr(msg_info, "rc", 0) != 0:
+                publish_error = f"MQTT Publish RC={msg_info.rc}"
+            else:
+                logger.info(f"[Command Service] Đã phát lệnh '{command_id}' ({payload.action.value}) tới topic '{command_topic}'")
         except Exception as e:
-            logger.error(f"[Command Service] Lỗi khi publish MQTT cho lệnh '{command_id}': {e}", exc_info=True)
+            publish_error = str(e)
+
+        if publish_error:
+            logger.error(f"[Command Service] Lỗi khi publish MQTT cho lệnh '{command_id}': {publish_error}", exc_info=True)
             new_command.status = CommandStatus.FAILED
             new_command.ack_status = "PUBLISH_FAILED"
-            new_command.ack_reason = str(e)
+            new_command.ack_reason = publish_error
             db.commit()
             db.refresh(new_command)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": f"Không thể gửi lệnh điều khiển tới thiết bị qua MQTT: {publish_error}",
+                    "command_id": command_id,
+                    "status": "FAILED",
+                },
+            )
 
         return new_command
 
@@ -135,7 +173,7 @@ class CommandService:
         """
         command_id = payload.get("commandId", payload.get("command_id"))
         if not command_id:
-            logger.warning(f"[Command Service] Bản tin ACK thiếu commandId: {payload}")
+            logger.warning("[Command Service] Bản tin ACK thiếu commandId")
             return False
 
         command = db.query(Command).filter(Command.id == command_id).first()
@@ -151,30 +189,58 @@ class CommandService:
             )
             return False
 
-        # 2. Đảm bảo tính bất biến (Idempotency): Không ghi đè lệnh đã kết thúc
-        if command.status in [CommandStatus.ACKED, CommandStatus.FAILED, CommandStatus.EXPIRED]:
-            logger.info(f"[Command Service] Lệnh '{command_id}' đã ở trạng thái kết thúc ({command.status.value}), bỏ qua ACK trùng lặp.")
+        # 2. Kiểm tra tính toàn vẹn của trường 'status' trong ACK
+        raw_status = payload.get("status")
+        if not raw_status:
+            logger.warning("[Command Service] Bản tin ACK thiếu trường 'status'")
+            return False
+
+        ack_status_raw = str(raw_status).strip().upper()
+        if ack_status_raw not in ["SUCCESS", "FAILED", "ERROR"]:
+            logger.warning("[Command Service] Bản tin ACK có status không hợp lệ")
+            return False
+
+        # 3. Cập nhật có điều kiện trạng thái (Conditional Atomic Update)
+        # Chỉ cập nhật nếu lệnh đang ở trạng thái SENT để chống Race Condition với Timeout Sweeper
+        new_status = CommandStatus.ACKED if ack_status_raw == "SUCCESS" else CommandStatus.FAILED
+        reason_val = payload.get("reason")
+
+        rows_updated = (
+            db.query(Command)
+            .filter(
+                Command.id == command_id,
+                Command.status == CommandStatus.SENT,
+            )
+            .update(
+                {
+                    Command.status: new_status,
+                    Command.ack_status: ack_status_raw,
+                    Command.ack_reason: reason_val,
+                    Command.acked_at: func.now(),
+                },
+                synchronize_session="fetch",
+            )
+        )
+        db.commit()
+
+        if rows_updated == 0:
+            logger.info(
+                f"[Command Service] Lệnh '{command_id}' đã ở trạng thái kết thúc ({command.status.value}), "
+                f"bỏ qua ACK trùng lặp hoặc đến sau timeout."
+            )
             return True
 
-        ack_status_raw = str(payload.get("status", "SUCCESS")).upper()
-        command.ack_status = ack_status_raw
-        command.ack_reason = payload.get("reason")
-        command.acked_at = func.now()
-
         if ack_status_raw == "SUCCESS":
-            command.status = CommandStatus.ACKED
             logger.info(f"[Command Service] Lệnh '{command_id}' đã được ESP32 thực thi thành công (ACKED)!")
         else:
-            command.status = CommandStatus.FAILED
-            logger.warning(f"[Command Service] Lệnh '{command_id}' thất bại trên phần cứng: {command.ack_reason}")
+            logger.warning(f"[Command Service] Lệnh '{command_id}' thất bại trên phần cứng: {reason_val}")
 
-        db.commit()
         return True
 
     def expire_stale_commands(self, timeout_seconds: int = 30, db: Optional[Session] = None) -> int:
         """
         Quét và chuyển các lệnh điều khiển ở trạng thái SENT quá thời gian chờ (timeout) sang EXPIRED.
-        Hỗ trợ dọn dẹp các lệnh treo khi ESP32 bị sập nguồn hoặc mất kết nối mạng.
+        Sử dụng cập nhật có điều kiện (Atomic Conditional Update) để chống Race Condition với ACK.
         """
         close_db = False
         if db is None:
@@ -183,22 +249,26 @@ class CommandService:
             close_db = True
         try:
             cutoff = datetime.now() - timedelta(seconds=timeout_seconds)
-            stale_cmds = db.query(Command).filter(
-                Command.status == CommandStatus.SENT,
-                Command.sent_at <= cutoff,
-            ).all()
-
-            count = len(stale_cmds)
-            for cmd in stale_cmds:
-                cmd.status = CommandStatus.EXPIRED
-                cmd.ack_status = "TIMEOUT"
-                cmd.ack_reason = f"Lệnh vượt quá thời gian chờ phản hồi từ thiết bị ({timeout_seconds}s)"
-                cmd.acked_at = func.now()
-
-            if count > 0:
+            rows_updated = (
+                db.query(Command)
+                .filter(
+                    Command.status == CommandStatus.SENT,
+                    Command.sent_at <= cutoff,
+                )
+                .update(
+                    {
+                        Command.status: CommandStatus.EXPIRED,
+                        Command.ack_status: "TIMEOUT",
+                        Command.ack_reason: f"Lệnh vượt quá thời gian chờ phản hồi từ thiết bị ({timeout_seconds}s)",
+                        Command.acked_at: func.now(),
+                    },
+                    synchronize_session="fetch",
+                )
+            )
+            if rows_updated > 0:
                 db.commit()
-                logger.info(f"[Command Service] Đã chuyển {count} lệnh treo (SENT) sang trạng thái EXPIRED.")
-            return count
+                logger.info(f"[Command Service] Đã chuyển {rows_updated} lệnh treo (SENT) sang trạng thái EXPIRED.")
+            return rows_updated
         except Exception as e:
             db.rollback()
             logger.error(f"[Command Service] Lỗi khi quét lệnh timeout: {e}", exc_info=True)

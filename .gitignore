@@ -81,3 +81,7 @@ uploads/*
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Mosquitto Broker Secrets
+deployment/mosquitto_passwd
+!deployment/mosquitto_passwd.example

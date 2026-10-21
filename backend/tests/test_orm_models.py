@@ -110,4 +110,6 @@ def run_orm_smoke_test():
 
 
 if __name__ == "__main__":
+    from smoke_guard import require_test_database
+    require_test_database()
     run_orm_smoke_test()
