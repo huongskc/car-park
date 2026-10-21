@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -46,6 +47,13 @@ def _lock_session_and_slot(db: Session, session_id: int) -> Optional[ParkingSess
     if slot_id:
         db.query(Slot).filter(Slot.id == slot_id).with_for_update().first()
     return db.query(ParkingSession).filter(ParkingSession.id == session_id).with_for_update().first()
+
+
+def normalize_plate(plate: Optional[str]) -> str:
+    """Chuẩn hóa biển số xe: viết hoa, loại bỏ khoảng trắng và các ký tự đặc biệt (-, .)."""
+    if not plate:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", plate.upper().strip())
 
 
 @router.get(
@@ -283,13 +291,13 @@ def resolve_plate_mismatch(
 @router.post(
     "/{session_id}/cancel",
     response_model=SessionOut,
-    summary="Hủy phiên gửi xe ngoại lệ và giải phóng ô đỗ (Chỉ dành cho ADMIN)",
+    summary="Hủy phiên gửi xe ngoại lệ và giải phóng ô đỗ (OPERATOR & ADMIN)",
 )
-def cancel_session_by_admin(
+def cancel_session(
     session_id: int,
     payload: SessionCancel,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_role(UserRole.OPERATOR)),
 ) -> SessionOut:
     """
     Lối xử lý quản trị dành riêng cho Quản trị viên (ADMIN):
@@ -326,7 +334,7 @@ def cancel_session_by_admin(
 
     session_obj.status = SessionStatus.CANCELLED
     session_obj.reviewed_by = current_user.id
-    session_obj.review_reason = f"[ADMIN CANCELLED] {payload.reason}"
+    session_obj.review_reason = f"[{current_user.role.value} CANCELLED] {payload.reason}"
     session_obj.exit_time = func.now()
 
     # Giải phóng ô đỗ về EMPTY
@@ -338,10 +346,10 @@ def cancel_session_by_admin(
     # Ghi nhận Audit Log
     audit = AuditLog(
         user_id=current_user.id,
-        action="ADMIN_CANCEL_SESSION",
+        action="CANCEL_SESSION",
         resource_type="parking_sessions",
         resource_id=str(session_obj.id),
-        details=f"Quản trị viên hủy phiên #{session_obj.session_code}. Lý do: {payload.reason}. Xác nhận xe đã rời bãi: {payload.confirmed_exit}.",
+        details=f"Người dùng '{current_user.username}' ({current_user.role.value}) hủy phiên #{session_obj.session_code}. Lý do: {payload.reason}. Xác nhận xe đã rời bãi: {payload.confirmed_exit}.",
     )
     db.add(audit)
 
@@ -349,6 +357,9 @@ def cancel_session_by_admin(
     db.refresh(session_obj)
 
     return session_obj
+
+
+cancel_session_by_admin = cancel_session
 
 
 @router.post(
@@ -410,7 +421,7 @@ def checkout_session(
             )
         # Biển số gửi lên lúc checkout bắt buộc phải khớp với đúng biển số ra đã được duyệt
         target_plate = session_obj.exit_plate or session_obj.entry_plate
-        if payload.exit_plate != target_plate:
+        if normalize_plate(payload.exit_plate) != normalize_plate(target_plate):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -427,11 +438,11 @@ def checkout_session(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
                         f"Phiên gửi xe #{session_obj.session_code} có ghi nhận biển số lúc vào ('{session_obj.entry_plate}'). "
-                        f"Bắt buộc phải cung cấp biển số xe lúc ra (exit_plate) để đối soát an ninh."
+                        f"Camera lối ra chưa ghi nhận được biển số; nhân viên vui lòng nhập biển số xe lúc ra (exit_plate) để đối soát an ninh."
                     ),
                 )
-            if payload.exit_plate != session_obj.entry_plate:
-                session_obj.exit_plate = payload.exit_plate
+            if normalize_plate(payload.exit_plate) != normalize_plate(session_obj.entry_plate):
+                session_obj.exit_plate = payload.exit_plate.strip()
                 if payload.exit_image_url is not None:
                     session_obj.exit_image_url = payload.exit_image_url
                 session_obj.status = SessionStatus.PENDING_REVIEW
@@ -466,6 +477,23 @@ def checkout_session(
                         f"Phiên gửi xe #{session_obj.session_code} đã được chuyển sang trạng thái chờ duyệt (PENDING_REVIEW)."
                     ),
                 )
+        else:
+            # Trường hợp phiên không có entry_plate (camera lối vào hỏng hoặc không đọc được biển số)
+            if payload.exit_plate:
+                session_obj.exit_plate = payload.exit_plate.strip()
+            else:
+                # Cả vào và ra đều không có biển số (cả 2 camera lỗi/thẻ vãng lai không ghi nhận biển)
+                alert = Alert(
+                    alert_type=AlertType.SYSTEM_ERROR,
+                    severity=AlertSeverity.WARNING,
+                    message=(
+                        f"Phiên gửi xe #{session_obj.session_code} (Thẻ: {session_obj.card_uid}) hoàn tất thanh toán "
+                        f"mà không có thông tin biển số vào và ra. Cần kiểm tra tín hiệu camera tại cổng."
+                    ),
+                    session_id=session_obj.id,
+                    status=AlertStatus.NEW,
+                )
+                db.add(alert)
 
     # 1. Xác định số tiền thu
     card = db.query(Card).filter(Card.uid == session_obj.card_uid).first()
@@ -491,7 +519,7 @@ def checkout_session(
     session_obj.status = SessionStatus.COMPLETED
     session_obj.exit_time = func.now()
     if payload.exit_plate is not None:
-        session_obj.exit_plate = payload.exit_plate
+        session_obj.exit_plate = payload.exit_plate.strip()
     if payload.exit_image_url is not None:
         session_obj.exit_image_url = payload.exit_image_url
 

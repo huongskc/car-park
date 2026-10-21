@@ -137,9 +137,8 @@ Authorization: Bearer <access_token>
   {
     "uid": "E28011052000",
     "card_type": "MONTHLY",
-    "plate_number": "30A-999.88",
-    "owner_name": "Nguyễn Văn Hưởng",
-    "owner_phone": "0987654321"
+    "registered_plate": "30A-999.88",
+    "owner_name": "Nguyễn Văn Hưởng"
   }
   ```
 - **Response `201 Created`**
@@ -148,14 +147,14 @@ Authorization: Bearer <access_token>
   curl -X POST "http://localhost:8000/api/v1/cards" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"uid\": \"E28011052000\", \"card_type\": \"MONTHLY\", \"plate_number\": \"30A-999.88\", \"owner_name\": \"Nguyễn Văn Hưởng\", \"owner_phone\": \"0987654321\"}"
+    -d "{\"uid\": \"E28011052000\", \"card_type\": \"MONTHLY\", \"registered_plate\": \"30A-999.88\", \"owner_name\": \"Nguyễn Văn Hưởng\"}"
   ```
 
 #### `PATCH /cards/{uid}/status` — Khóa hoặc Mở khóa thẻ
 - **Body**:
   ```json
   {
-    "status": "BLOCKED"
+    "is_active": false
   }
   ```
 - **cURL Example**:
@@ -163,7 +162,7 @@ Authorization: Bearer <access_token>
   curl -X PATCH "http://localhost:8000/api/v1/cards/E28011052000/status" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"status\": \"BLOCKED\"}"
+    -d "{\"is_active\": false}"
   ```
 
 ---
@@ -270,9 +269,9 @@ Authorization: Bearer <access_token>
     -d "{\"approved\": true, \"note\": \"Đã đối chiếu giấy tờ xe trùng khớp\"}"
   ```
 
-#### `POST /sessions/{id}/cancel` — Hủy phiên gửi xe ngoại lệ và giải phóng ô (Chỉ dành cho ADMIN)
+#### `POST /sessions/{id}/cancel` — Hủy phiên gửi xe ngoại lệ và giải phóng ô (OPERATOR & ADMIN)
 - **Nghiệp vụ**:
-  - Lối xử lý quản trị dành riêng cho `ADMIN` khi phương tiện gặp sự cố đặc biệt hoặc đã được dời khỏi bãi thủ công.
+  - Lối xử lý ngoại lệ dành cho `OPERATOR` và `ADMIN` khi phương tiện gặp sự cố đặc biệt hoặc đã được dời khỏi bãi thủ công.
   - Điều kiện: Phiên phải ở trạng thái `PENDING_REVIEW` và chưa thanh toán (`is_paid = false`). Bắt buộc `confirmed_exit: true`.
   - Kết quả: Phiên chuyển `CANCELLED`, ô đỗ gắn với phiên được giải phóng về `EMPTY`, ghi vết kiểm toán bắt buộc vào `audit_logs`.
 - **Body**:
@@ -285,7 +284,7 @@ Authorization: Bearer <access_token>
 - **cURL Example**:
   ```bash
   curl -X POST "http://localhost:8000/api/v1/sessions/105/cancel" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"reason\": \"Xe đã dời bãi ngoài thực địa\", \"confirmed_exit\": true}"
   ```

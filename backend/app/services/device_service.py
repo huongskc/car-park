@@ -7,6 +7,8 @@ from sqlalchemy import and_, or_
 from app.config import settings
 from app.database import SessionLocal
 from app.models.device import Device
+from app.models.alert import Alert
+from app.models.enums import AlertType, AlertSeverity, AlertStatus
 
 logger = logging.getLogger("smart_parking.device_service")
 
@@ -57,6 +59,23 @@ class DeviceService:
                 ).update({Device.is_online: False}, synchronize_session=False)
                 if updated:
                     stale_device_ids.append(device_id)
+                    existing_offline_alert = (
+                        db.query(Alert)
+                        .filter(
+                            Alert.device_id == device_id,
+                            Alert.alert_type == AlertType.DEVICE_OFFLINE,
+                            Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                        )
+                        .first()
+                    )
+                    if not existing_offline_alert:
+                        db.add(Alert(
+                            alert_type=AlertType.DEVICE_OFFLINE,
+                            severity=AlertSeverity.WARNING,
+                            message=f"Thiết bị '{device_id}' quá hạn gửi nhịp tim ({timeout_seconds}s), đã tự động chuyển sang Ngoại tuyến.",
+                            device_id=device_id,
+                            status=AlertStatus.NEW,
+                        ))
 
             if stale_device_ids:
                 db.commit()

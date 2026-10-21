@@ -100,15 +100,26 @@ class IoTListener:
                 f"Cảnh báo an ninh: Phát hiện bản tin giả mạo hoặc Token không hợp lệ từ thiết bị '{device.id}' "
                 f"trên topic '{topic}'."
             )
-            alert = Alert(
-                alert_type=AlertType.SYSTEM_ERROR,
-                severity=AlertSeverity.CRITICAL,
-                message=alert_msg,
-                device_id=device.id,
-                status=AlertStatus.NEW,
+            # Chống Alert Flooding / DoS: chỉ tạo mới nếu chưa có cảnh báo SYSTEM_ERROR chưa xử lý
+            existing_alert = (
+                db.query(Alert)
+                .filter(
+                    Alert.device_id == device.id,
+                    Alert.alert_type == AlertType.SYSTEM_ERROR,
+                    Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                )
+                .first()
             )
-            db.add(alert)
-            db.commit()
+            if not existing_alert:
+                alert = Alert(
+                    alert_type=AlertType.SYSTEM_ERROR,
+                    severity=AlertSeverity.CRITICAL,
+                    message=alert_msg,
+                    device_id=device.id,
+                    status=AlertStatus.NEW,
+                )
+                db.add(alert)
+                db.commit()
             logger.error(f"[IoT Listener] {alert_msg}")
             return False
         return True
@@ -124,17 +135,42 @@ class IoTListener:
                 f"Cảnh báo sai phân vùng: Bản tin trên topic '{topic}' mang site '{topic_site_id}', "
                 f"khác với phân vùng đăng ký của thiết bị '{device.site_id}'."
             )
-            db.add(Alert(
-                alert_type=AlertType.SYSTEM_ERROR,
-                severity=AlertSeverity.WARNING,
-                message=alert_msg,
-                device_id=device.id,
-                status=AlertStatus.NEW,
-            ))
-            db.commit()
+            existing_alert = (
+                db.query(Alert)
+                .filter(
+                    Alert.device_id == device.id,
+                    Alert.alert_type == AlertType.SYSTEM_ERROR,
+                    Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                )
+                .first()
+            )
+            if not existing_alert:
+                db.add(Alert(
+                    alert_type=AlertType.SYSTEM_ERROR,
+                    severity=AlertSeverity.WARNING,
+                    message=alert_msg,
+                    device_id=device.id,
+                    status=AlertStatus.NEW,
+                ))
+                db.commit()
             logger.warning("[IoT Listener] %s", alert_msg)
             return False
         return self._verify_device_token(db, device, payload, topic)
+
+    def _resolve_device_offline_alerts(self, db: Session, device_id: str) -> None:
+        """Tự động chuyển các cảnh báo DEVICE_OFFLINE của thiết bị sang RESOLVED khi thiết bị online trở lại."""
+        stale_offline_alerts = (
+            db.query(Alert)
+            .filter(
+                Alert.device_id == device_id,
+                Alert.alert_type == AlertType.DEVICE_OFFLINE,
+                Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+            )
+            .all()
+        )
+        for al in stale_offline_alerts:
+            al.status = AlertStatus.RESOLVED
+            al.resolved_at = func.now()
 
     # ----------------------------------------------------
     # 1. XỬ LÝ BẢN TIN TRẠNG THÁI & NHỊP TIM (HEARTBEAT)
@@ -177,6 +213,7 @@ class IoTListener:
             device.last_heartbeat_at = func.now()
             if device.status == DeviceStatus.ACTIVATED:
                 device.is_online = True
+                self._resolve_device_offline_alerts(db, device.id)
             elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
                 device.is_online = False
                 logger.info(
@@ -395,6 +432,7 @@ class IoTListener:
             device.last_heartbeat_at = func.now()
             if device.status == DeviceStatus.ACTIVATED:
                 device.is_online = True
+                self._resolve_device_offline_alerts(db, device.id)
             elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
                 device.is_online = False
                 logger.info(
@@ -508,6 +546,7 @@ class IoTListener:
             device.last_heartbeat_at = func.now()
             if device.status == DeviceStatus.ACTIVATED:
                 device.is_online = True
+                self._resolve_device_offline_alerts(db, device.id)
             elif device.status in [DeviceStatus.MAINTENANCE, DeviceStatus.SUSPENDED, DeviceStatus.DECOMMISSIONED]:
                 device.is_online = False
                 logger.info(
