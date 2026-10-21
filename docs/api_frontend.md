@@ -252,13 +252,14 @@ Authorization: Bearer <access_token>
 
 #### `PATCH /sessions/{id}/resolve-plate` — Duyệt ngoại lệ lệch biển số lúc ra
 - **Nghiệp vụ**:
-  - `approved: true`: Cho phép xe ra, cập nhật trạng thái về `ACTIVE` để tiếp tục checkout với đúng biển số ra đã duyệt.
+  - `approved: true`: Cho phép xe ra, cập nhật trạng thái về `ACTIVE` để tiếp tục checkout. Có thể truyền thêm `actual_exit_plate` để đính chính lại biển số ra thực tế nếu camera ALPR nhận diện sai.
   - `approved: false`: Từ chối cho ra. Phiên giữ nguyên `PENDING_REVIEW` và ô đỗ giữ nguyên `OCCUPIED` (do phương tiện chưa được xác minh rời bãi). Lưu lý do và ghi nhận audit log.
 - **Body**:
   ```json
   {
     "approved": true,
-    "note": "Đã đối chiếu giấy đăng ký xe và CMND hợp lệ"
+    "note": "Đã đối chiếu giấy đăng ký xe và CMND hợp lệ",
+    "actual_exit_plate": "30A-111.11"
   }
   ```
 - **cURL Example**:
@@ -266,7 +267,7 @@ Authorization: Bearer <access_token>
   curl -X PATCH "http://localhost:8000/api/v1/sessions/105/resolve-plate" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"approved\": true, \"note\": \"Đã đối chiếu giấy tờ xe trùng khớp\"}"
+    -d "{\"approved\": true, \"note\": \"Đã đối chiếu giấy tờ xe trùng khớp\", \"actual_exit_plate\": \"30A-111.11\"}"
   ```
 
 #### `POST /sessions/{id}/cancel` — Hủy phiên gửi xe ngoại lệ và giải phóng ô (OPERATOR & ADMIN)
@@ -324,7 +325,7 @@ Authorization: Bearer <access_token>
   ```
 
 #### `POST /alerts/{id}/ack` — Tiếp nhận sự cố
-- **Chức năng**: Chuyển trạng thái từ `NEW` sang `ACKNOWLEDGED`, ghi nhận ID người tiếp nhận.
+- **Chức năng**: Chuyển trạng thái từ `NEW` sang `ACKNOWLEDGED`, ghi nhận ID người tiếp nhận và tự động ghi vết kiểm toán vào `audit_logs` (`action="ACKNOWLEDGE_ALERT"`).
 - **cURL Example**:
   ```bash
   curl -X POST "http://localhost:8000/api/v1/alerts/12/ack" \
@@ -332,6 +333,7 @@ Authorization: Bearer <access_token>
   ```
 
 #### `PATCH /alerts/{id}/resolve` — Đóng cảnh báo sự cố
+- **Chức năng**: Chuyển trạng thái sang `RESOLVED` hoặc `DISMISSED`, ghi nhận thời gian hoàn tất và tự động ghi vết kiểm toán vào `audit_logs` (`action="RESOLVE_ALERT"`).
 - **Body**:
   ```json
   {

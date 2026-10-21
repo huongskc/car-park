@@ -298,7 +298,7 @@ def update_device_config(
     }
     publish_error = None
     try:
-        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1)
+        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1, retain=True)
         if getattr(msg_info, "rc", 0) != 0:
             publish_error = f"MQTT Publish RC={msg_info.rc}"
     except Exception as e:
@@ -366,7 +366,7 @@ def resend_device_config(
         "updatedAt": datetime.now().isoformat(),
     }
     try:
-        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1)
+        msg_info = mqtt_service.publish(config_topic, config_payload, qos=1, retain=True)
         if getattr(msg_info, "rc", 0) != 0:
             raise RuntimeError(f"MQTT Publish RC={msg_info.rc}")
     except Exception as e:

@@ -16,6 +16,7 @@ class SessionResolvePlate(BaseModel):
     """Schema duyệt ngoại lệ lệch biển số xe lúc ra."""
     approved: bool = Field(..., description="Quyết định duyệt: True cho phép xe ra, False từ chối")
     note: str = Field(..., min_length=1, max_length=255, description="Ghi chú / Lý do quyết định của nhân viên", examples=["Đã kiểm tra vé và đối chiếu căn cước công dân"])
+    actual_exit_plate: Optional[str] = Field(None, max_length=20, description="Biển số xe thực tế lúc ra nếu cần đính chính (khi camera OCR đọc sai)", examples=["30A-999.88"])
 
 
 class SessionCancel(BaseModel):

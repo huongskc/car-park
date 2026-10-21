@@ -8,6 +8,7 @@ from app.core.dependencies import require_role
 from app.models.enums import UserRole, AlertType, AlertSeverity, AlertStatus
 from app.models.user import User
 from app.models.alert import Alert
+from app.models.audit import AuditLog
 from app.schemas.alert_schema import AlertResolve, AlertOut
 
 router = APIRouter(
@@ -77,6 +78,16 @@ def resolve_alert(
     alert.resolved_by = current_user.id
     alert.resolved_at = func.now()
 
+    # Ghi nhận Audit Log
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="RESOLVE_ALERT",
+        resource_type="alerts",
+        resource_id=str(alert.id),
+        details=f"Người dùng '{current_user.username}' ({current_user.role.value}) chuyển trạng thái cảnh báo #{alert.id} ({alert.alert_type.value}) sang {payload.status.value}.",
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(alert)
 
@@ -107,6 +118,17 @@ def acknowledge_alert(
 
     alert.status = AlertStatus.ACKNOWLEDGED
     alert.resolved_by = current_user.id
+
+    # Ghi nhận Audit Log
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="ACKNOWLEDGE_ALERT",
+        resource_type="alerts",
+        resource_id=str(alert.id),
+        details=f"Người dùng '{current_user.username}' ({current_user.role.value}) tiếp nhận xử lý cảnh báo #{alert.id} ({alert.alert_type.value}).",
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(alert)
 

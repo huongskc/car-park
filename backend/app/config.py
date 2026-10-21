@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     SERVO_OPEN_TIMEOUT_SEC: int = 10
     HEARTBEAT_TIMEOUT_SEC: int = 30
     DISTANCE_THRESHOLD_CM: float = 15.0
+    ENTRY_GRACE_PERIOD_SEC: int = 180
     TESTING: bool = False
 
     model_config = SettingsConfigDict(

@@ -375,27 +375,37 @@ class IoTListener:
                 if active_session:
                     slot.status = SlotStatus.OCCUPIED
                     if not is_occupied:
-                        existing_alert = (
-                            db.query(Alert)
-                            .filter(
-                                Alert.session_id == active_session.id,
-                                Alert.alert_type == AlertType.SYSTEM_ERROR,
-                                Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                        # Grace period: cho phép xe di chuyển từ cổng vào ô đỗ (mặc định 180s)
+                        session_start = active_session.entry_time or active_session.created_at
+                        is_within_grace = False
+                        if session_start:
+                            elapsed = (datetime.now() - session_start).total_seconds()
+                            if elapsed <= settings.ENTRY_GRACE_PERIOD_SEC:
+                                is_within_grace = True
+
+                        if not is_within_grace:
+                            existing_alert = (
+                                db.query(Alert)
+                                .filter(
+                                    Alert.session_id == active_session.id,
+                                    Alert.alert_type == AlertType.SYSTEM_ERROR,
+                                    Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                                )
+                                .first()
                             )
-                            .first()
-                        )
-                        if not existing_alert:
-                            db.add(Alert(
-                                alert_type=AlertType.SYSTEM_ERROR,
-                                severity=AlertSeverity.WARNING,
-                                message=(
-                                    f"Cảm biến đo rỗng ({distance_cm} cm) nhưng ô '{slot.id}' đang có phiên gửi xe "
-                                    f"{active_session.status.value} (Mã phiên: {active_session.session_code})."
-                                ),
-                                device_id=device.id,
-                                session_id=active_session.id,
-                                status=AlertStatus.NEW,
-                            ))
+                            if not existing_alert:
+                                db.add(Alert(
+                                    alert_type=AlertType.SYSTEM_ERROR,
+                                    severity=AlertSeverity.WARNING,
+                                    message=(
+                                        f"Cảm biến đo rỗng ({distance_cm} cm) nhưng ô '{slot.id}' đang có phiên gửi xe "
+                                        f"{active_session.status.value} (Mã phiên: {active_session.session_code}) "
+                                        f"quá thời gian cho phép đỗ ({settings.ENTRY_GRACE_PERIOD_SEC}s)."
+                                    ),
+                                    device_id=device.id,
+                                    session_id=active_session.id,
+                                    status=AlertStatus.NEW,
+                                ))
                 elif slot.status == SlotStatus.MAINTENANCE:
                     if is_occupied:
                         existing_maint_alert = (
@@ -509,28 +519,52 @@ class IoTListener:
             # Kiểm tra thẻ trong cơ sở dữ liệu
             card = db.query(Card).filter(Card.uid == card_uid).first()
             if not card:
-                alert = Alert(
-                    alert_type=AlertType.UNAUTHORIZED_CARD,
-                    severity=AlertSeverity.WARNING,
-                    message=f"Phát hiện quẹt thẻ không hợp lệ (không tồn tại trong CSDL): UID '{card_uid}' tại cổng {gate_id}.",
-                    device_id=device.id,
-                    status=AlertStatus.NEW,
+                # Chống Alert Flooding khi giữ thẻ không hợp lệ trước đầu đọc RC522
+                existing_alert = (
+                    db.query(Alert)
+                    .filter(
+                        Alert.device_id == device.id,
+                        Alert.alert_type == AlertType.UNAUTHORIZED_CARD,
+                        Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                        Alert.message.like(f"%'{card_uid}'%"),
+                    )
+                    .first()
                 )
-                db.add(alert)
-                db.commit()
+                if not existing_alert:
+                    alert = Alert(
+                        alert_type=AlertType.UNAUTHORIZED_CARD,
+                        severity=AlertSeverity.WARNING,
+                        message=f"Phát hiện quẹt thẻ không hợp lệ (không tồn tại trong CSDL): UID '{card_uid}' tại cổng {gate_id}.",
+                        device_id=device.id,
+                        status=AlertStatus.NEW,
+                    )
+                    db.add(alert)
+                    db.commit()
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' không tồn tại trong hệ thống!")
                 return
 
             if not card.is_active:
-                alert = Alert(
-                    alert_type=AlertType.UNAUTHORIZED_CARD,
-                    severity=AlertSeverity.WARNING,
-                    message=f"Phát hiện quẹt thẻ đã bị khóa: UID '{card_uid}' (Chủ thẻ: {card.owner_name or 'N/A'}) tại cổng {gate_id}.",
-                    device_id=device.id,
-                    status=AlertStatus.NEW,
+                # Chống Alert Flooding khi giữ thẻ bị khóa trước đầu đọc RC522
+                existing_alert = (
+                    db.query(Alert)
+                    .filter(
+                        Alert.device_id == device.id,
+                        Alert.alert_type == AlertType.UNAUTHORIZED_CARD,
+                        Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+                        Alert.message.like(f"%'{card_uid}'%"),
+                    )
+                    .first()
                 )
-                db.add(alert)
-                db.commit()
+                if not existing_alert:
+                    alert = Alert(
+                        alert_type=AlertType.UNAUTHORIZED_CARD,
+                        severity=AlertSeverity.WARNING,
+                        message=f"Phát hiện quẹt thẻ đã bị khóa: UID '{card_uid}' (Chủ thẻ: {card.owner_name or 'N/A'}) tại cổng {gate_id}.",
+                        device_id=device.id,
+                        status=AlertStatus.NEW,
+                    )
+                    db.add(alert)
+                    db.commit()
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' đã bị khóa nhưng vẫn quẹt qua cổng!")
                 return
 

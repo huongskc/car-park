@@ -266,7 +266,12 @@ def resolve_plate_mismatch(
         session_obj.status = SessionStatus.ACTIVE
         session_obj.reviewed_by = current_user.id
         session_obj.review_reason = payload.note
-        decision_str = "Chấp thuận duyệt cho xe ra (chuyển sang ACTIVE)"
+        if payload.actual_exit_plate:
+            old_plate = session_obj.exit_plate
+            session_obj.exit_plate = payload.actual_exit_plate.strip()
+            decision_str = f"Chấp thuận duyệt cho xe ra (đính chính biển ra từ '{old_plate}' thành '{session_obj.exit_plate}')"
+        else:
+            decision_str = "Chấp thuận duyệt cho xe ra (chuyển sang ACTIVE)"
     else:
         # Giữ nguyên PENDING_REVIEW và giữ ô OCCUPIED vì phương tiện chưa được xác minh đã rời bãi
         session_obj.review_reason = f"[REJECTED] {payload.note}"
@@ -419,14 +424,15 @@ def checkout_session(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Phiên gửi xe đã qua duyệt ngoại lệ, bắt buộc phải cung cấp biển số ra (exit_plate) để xác nhận.",
             )
-        # Biển số gửi lên lúc checkout bắt buộc phải khớp với đúng biển số ra đã được duyệt
-        target_plate = session_obj.exit_plate or session_obj.entry_plate
-        if normalize_plate(payload.exit_plate) != normalize_plate(target_plate):
+        # Biển số gửi lên lúc checkout được đối soát với biển ra đã duyệt hoặc biển vào gốc
+        allowed_plates = [p for p in (session_obj.exit_plate, session_obj.entry_plate) if p]
+        if normalize_plate(payload.exit_plate) not in [normalize_plate(p) for p in allowed_plates]:
+            target_desc = " / ".join(f"'{p}'" for p in allowed_plates)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Biển số ra '{payload.exit_plate}' không khớp với biển số đã được nhân viên vận hành "
-                    f"phê duyệt ngoại lệ ('{target_plate}')."
+                    f"phê duyệt ngoại lệ ({target_desc})."
                 ),
             )
     # Trường hợp 2: Phiên chưa từng được nhân viên duyệt ngoại lệ (reviewed_by is None)
