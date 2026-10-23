@@ -30,6 +30,7 @@ wheels/
 *.egg
 venv/
 .venv/
+.test-deps/
 ENV/
 
 # Node.js / Frontend

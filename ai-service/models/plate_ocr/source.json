@@ -1,0 +1,12 @@
+[
+  {
+    "file": "cct_s_v2_global.onnx",
+    "source": "https://github.com/ankandrew/cnn-ocr-lp/releases/download/arg-plates/cct_s_v2_global.onnx",
+    "sha256": "384bbbd2cea3ef54761d3df70822ef3a349ee1a112aeafddbe0e3ba06bc6e47b"
+  },
+  {
+    "file": "cct_s_v2_global_plate_config.yaml",
+    "source": "https://github.com/ankandrew/cnn-ocr-lp/releases/download/arg-plates/cct_s_v2_global_plate_config.yaml",
+    "sha256": "0335c74a305173bb6f393efed0fde03cadeaa0b649ed8e19f431016d8232d0a6"
+  }
+]
