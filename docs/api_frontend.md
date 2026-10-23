@@ -1,5 +1,8 @@
 # Tài liệu REST API Backend — Smart Parking IoT
 
+Tích hợp nhận diện biển số: xem [ALPR API](alpr_integration.md) để chụp và lấy
+ảnh qua backend bằng JWT, không đưa khóa AI service xuống trình duyệt.
+
 - **Base URL**: `http://localhost:8000/api/v1`  
 - **OpenAPI Docs (Swagger UI)**: `http://localhost:8000/docs`  
 

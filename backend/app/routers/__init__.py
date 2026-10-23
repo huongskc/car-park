@@ -7,6 +7,7 @@ from app.routers.alerts import router as alerts_router
 from app.routers.audits import router as audits_router
 from app.routers.devices import router as devices_router
 from app.routers.commands import router as commands_router
+from app.routers.alpr import router as alpr_router
 
 __all__ = [
     "auth_router",
@@ -18,4 +19,5 @@ __all__ = [
     "audits_router",
     "devices_router",
     "commands_router",
+    "alpr_router",
 ]
