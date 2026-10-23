@@ -46,6 +46,12 @@ from app.schemas.command_schema import (
     CommandAckPayload,
     CommandOut,
 )
+from app.schemas.tariff_schema import (
+    TariffOut,
+)
+from app.schemas.telemetry_schema import (
+    TelemetryLogOut,
+)
 
 __all__ = [
     # Auth & User
@@ -85,4 +91,8 @@ __all__ = [
     "CommandSend",
     "CommandAckPayload",
     "CommandOut",
+    # Tariffs
+    "TariffOut",
+    # Telemetry
+    "TelemetryLogOut",
 ]

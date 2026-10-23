@@ -205,6 +205,32 @@ Authorization: Bearer <access_token>
     -d "{\"status\": \"MAINTENANCE\"}"
   ```
 
+#### `GET /slots/{id}/telemetry` — Xem lịch sử đo cảm biến siêu âm theo ô đỗ (VIEWER, OPERATOR, ADMIN)
+- **Query Params**: `limit` (mặc định 40, tối đa 500), `minutes` (giới hạn N phút gần nhất, tối đa 1440).
+- **Mô tả**: Trả về N bản ghi đo khoảng cách mới nhất từ cảm biến siêu âm của ô đỗ, được sắp xếp theo thứ tự thời gian tăng dần (`sampled_at.asc()`) để Frontend vẽ biểu đồ Sparkline trực tiếp. Trả về `404 Not Found` nếu không tìm thấy ô đỗ.
+- **Response `200 OK`**:
+  ```json
+  [
+    {
+      "id": 105,
+      "device_id": "ESP32_NODE_01",
+      "slot_id": "SLOT_A1",
+      "distance_cm": 15.4,
+      "is_occupied": true,
+      "boot_id": "boot_abc123",
+      "seq": 42,
+      "sampled_at": "2026-10-23T00:30:00",
+      "received_at": "2026-10-23T00:30:01"
+    }
+  ]
+  ```
+- **cURL Example**:
+  ```bash
+  curl -X GET "http://localhost:8000/api/v1/slots/SLOT_A1/telemetry?limit=40" \
+    -H "Authorization: Bearer $TOKEN"
+  ```
+
+
 ---
 
 ### 2.5 Phân hệ Phiên gửi xe & Thu phí (`/sessions`) — Quyền: `OPERATOR`, `ADMIN`
@@ -483,6 +509,75 @@ Authorization: Bearer <access_token>
   ```bash
   curl -X GET "http://localhost:8000/api/v1/audit-logs?action=BARRIER_OPEN&limit=20" \
     -H "Authorization: Bearer $ADMIN_TOKEN"
+  ```
+
+---
+
+### 2.10 Phân hệ Biểu phí Gửi xe (`/tariffs`) — Quyền: `VIEWER`, `OPERATOR`, `ADMIN`
+
+#### `GET /tariffs` — Danh sách biểu phí gửi xe
+- **Query Params**: `skip` (mặc định 0), `limit` (mặc định 50), `is_active` (lọc theo trạng thái hiệu lực true/false).
+- **Mô tả**: Tra cứu danh sách các biểu phí cấu hình trong hệ thống (vé lượt FLAT, vé theo giờ HOURLY).
+- **Response `200 OK`**:
+  ```json
+  [
+    {
+      "id": 1,
+      "name": "Vé lượt Ô tô Tiêu chuẩn",
+      "fee_type": "FLAT",
+      "flat_rate": 20000.0,
+      "hourly_rate": 0.0,
+      "grace_period_mins": 5,
+      "is_active": true,
+      "effective_from": "2026-01-01T00:00:00"
+    }
+  ]
+  ```
+- **cURL Example**:
+  ```bash
+  curl -X GET "http://localhost:8000/api/v1/tariffs?is_active=true" \
+    -H "Authorization: Bearer $TOKEN"
+  ```
+
+#### `GET /tariffs/{id}` — Chi tiết một biểu phí
+- **Response `200 OK`**: Thông tin chi tiết của biểu phí. Trả về `404 Not Found` nếu không tìm thấy.
+- **cURL Example**:
+  ```bash
+  curl -X GET "http://localhost:8000/api/v1/tariffs/1" \
+    -H "Authorization: Bearer $TOKEN"
+  ```
+
+---
+
+### 2.11 Phân hệ Lịch sử Telemetry Tổng quát (`/telemetry`) — Quyền: `VIEWER`, `OPERATOR`, `ADMIN`
+
+#### `GET /telemetry/history` — Lịch sử đo cảm biến siêu âm theo bộ lọc
+- **Query Params**:
+  - `slot_id`: Lọc theo mã ô đỗ xe (tùy chọn)
+  - `device_id`: Lọc theo mã thiết bị ESP32 (tùy chọn)
+  - `limit`: Số lượng mẫu đo tối đa (mặc định 40, tối đa 500)
+  - `minutes`: Giới hạn trong N phút gần nhất (tùy chọn, tối đa 1440)
+- **Mô tả**: Trả về N bản ghi đo cảm biến mới nhất thỏa mãn bộ lọc, được sắp xếp theo chuỗi thời gian tăng dần (`sampled_at.asc()`).
+- **Response `200 OK`**:
+  ```json
+  [
+    {
+      "id": 105,
+      "device_id": "ESP32_NODE_01",
+      "slot_id": "SLOT_A1",
+      "distance_cm": 15.4,
+      "is_occupied": true,
+      "boot_id": "boot_abc123",
+      "seq": 42,
+      "sampled_at": "2026-10-23T00:30:00",
+      "received_at": "2026-10-23T00:30:01"
+    }
+  ]
+  ```
+- **cURL Example**:
+  ```bash
+  curl -X GET "http://localhost:8000/api/v1/telemetry/history?slot_id=SLOT_A1&limit=40" \
+    -H "Authorization: Bearer $TOKEN"
   ```
 
 ---

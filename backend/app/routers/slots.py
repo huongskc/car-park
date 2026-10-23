@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -6,10 +7,12 @@ from app.database import get_db
 from app.core.dependencies import require_role
 from app.models.slot import Slot
 from app.models.session import ParkingSession
+from app.models.telemetry import TelemetryLog
 from app.models.audit import AuditLog
 from app.models.enums import SlotStatus, SessionStatus, UserRole
 from app.models.user import User
 from app.schemas.slot_schema import SlotStatusUpdate, SlotOut
+from app.schemas.telemetry_schema import TelemetryLogOut
 
 router = APIRouter(
     prefix="/slots",
@@ -107,3 +110,43 @@ def update_slot_status(
     db.refresh(slot)
 
     return slot
+
+
+@router.get(
+    "/{slot_id}/telemetry",
+    response_model=list[TelemetryLogOut],
+    summary="Xem lịch sử đo lường cảm biến siêu âm theo ô đỗ (VIEWER, OPERATOR, ADMIN)",
+)
+def get_slot_telemetry(
+    slot_id: str,
+    limit: int = Query(default=40, ge=1, le=500, description="Số lượng bản ghi tối đa"),
+    minutes: Optional[int] = Query(default=None, ge=1, le=1440, description="Lọc dữ liệu trong N phút gần nhất"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.VIEWER)),
+) -> list[TelemetryLogOut]:
+    """
+    Endpoint tra cứu lịch sử đo khoảng cách cảm biến siêu âm của một ô đỗ:
+    - Quyền truy cập: VIEWER, OPERATOR, ADMIN.
+    - Kiểm tra ô đỗ tồn tại trong hệ thống (trả về 404 nếu không tìm thấy).
+    - Lấy N bản ghi mới nhất và trả về theo thứ tự thời gian tăng dần (sampled_at.asc())
+      giúp Frontend dễ dàng vẽ đồ thị Sparkline trực tiếp.
+    """
+    slot = db.query(Slot).filter(Slot.id == slot_id).first()
+    if not slot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy ô đỗ có mã ID '{slot_id}'.",
+        )
+
+    query = db.query(TelemetryLog).filter(TelemetryLog.slot_id == slot_id)
+    if minutes is not None:
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        query = query.filter(TelemetryLog.sampled_at >= cutoff)
+
+    records = (
+        query.order_by(TelemetryLog.sampled_at.desc(), TelemetryLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    records.reverse()
+    return records

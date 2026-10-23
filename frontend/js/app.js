@@ -101,8 +101,15 @@ async function pDevices(){const dv=await api('/devices?limit=100');
 
 const spark=a=>{if(a.length<2)return'<span class="mt">Đang thu thập…</span>';const mx=Math.max(...a,20),w=300,h=60;return `<svg class="sp" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="currentColor" stroke-width="2" points="${a.map((v,i)=>`${(i/(a.length-1)*w).toFixed(1)},${(h-v/mx*h).toFixed(1)}`).join(' ')}"/></svg>`};
 async function dataLive(){const sl=await api('/slots');
-  sl.forEach(s=>{const a=hist[s.id]=hist[s.id]||[];if(s.last_distance_cm!=null)a.push(Number(s.last_distance_cm));if(a.length>40)a.shift()});
-  return tbl(['Ô đỗ','Trạng thái','Khoảng cách (cm)','Cập nhật','Biểu đồ'],sl.map(s=>tr([esc(s.id),bd(s.status),s.last_distance_cm??'—',dt(s.last_updated_at),spark(hist[s.id]||[])])))+'<p class="note">Biểu đồ ghi nhận mỗi 5 giây từ lúc mở trang; backend chưa có endpoint lịch sử telemetry.</p>'}
+  await Promise.all(sl.map(async s=>{
+    if(!hist[s.id]){try{const h=await api(`/slots/${s.id}/telemetry?limit=40`);hist[s.id]=h.map(x=>Number(x.distance_cm))}catch{hist[s.id]=[]}}
+    const a=hist[s.id]=hist[s.id]||[];
+    if(s.last_distance_cm!=null){
+      if(!a.length||a[a.length-1]!==Number(s.last_distance_cm))a.push(Number(s.last_distance_cm));
+      if(a.length>40)a.shift();
+    }
+  }));
+  return tbl(['Ô đỗ','Trạng thái','Khoảng cách (cm)','Cập nhật','Biểu đồ'],sl.map(s=>tr([esc(s.id),bd(s.status),s.last_distance_cm??'—',dt(s.last_updated_at),spark(hist[s.id]||[])])))+'<p class="note">Biểu đồ được đồng bộ từ lịch sử đo telemetry của backend và cập nhật thời gian thực mỗi 5 giây.</p>'}
 async function pMonitor(tab){
   if(tab==='alerts'){const al=await api('/alerts?limit=100');
     return tbl(['Thời gian','Loại sự cố','Mức độ','Nội dung','Thiết bị','Tình trạng','Xử lý'],al.map(a=>tr([dt(a.created_at),AT[a.alert_type],bd(a.severity),`<span style="white-space:normal">${esc(a.message)}</span>`,esc(a.device_id),bd(a.status),a.status==='RESOLVED'?'':(a.status==='NEW'?`<button class="sm sec" onclick="C('alert',${a.id},'ACKNOWLEDGED')">Tiếp nhận</button> `:'')+`<button class="sm" onclick="C('alert',${a.id},'RESOLVED')">Đã xử lý</button>`])))}
