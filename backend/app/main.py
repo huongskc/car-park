@@ -29,6 +29,8 @@ from app.routers import (
     devices_router,
     commands_router,
     alpr_router,
+    tariffs_router,
+    telemetry_router,
 )
 
 
@@ -105,6 +107,8 @@ app.include_router(audits_router, prefix="/api/v1")
 app.include_router(devices_router, prefix="/api/v1")
 app.include_router(commands_router, prefix="/api/v1")
 app.include_router(alpr_router, prefix="/api/v1")
+app.include_router(tariffs_router, prefix="/api/v1")
+app.include_router(telemetry_router, prefix="/api/v1")
 
 
 @app.get(
