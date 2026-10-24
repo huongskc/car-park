@@ -170,6 +170,14 @@ def create_session(
                 detail=f"Ô đỗ '{payload.slot_id}' hiện đang có phiên gửi xe hoạt động (#{existing_slot_session.session_code}).",
             )
         slot.status = SlotStatus.OCCUPIED
+    else:
+        # Nếu không chỉ định slot_id cụ thể, kiểm tra xem toàn bãi xe còn ô EMPTY nào khả dụng không
+        empty_slots_count = db.query(func.count(Slot.id)).filter(Slot.status == SlotStatus.EMPTY).scalar() or 0
+        if empty_slots_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bãi đỗ xe đã đầy. Hiện không còn vị trí đỗ trống nào khả dụng.",
+            )
 
     # 4. Lấy biểu phí áp dụng
     tariff = db.query(Tariff).filter(Tariff.is_active == True).first()
@@ -419,35 +427,41 @@ def checkout_session(
     # Kiểm tra lệch biển số xe lúc ra (Plate Mismatch Detection):
     # Trường hợp 1: Phiên đã qua nhân viên duyệt ngoại lệ (reviewed_by is not None)
     if session_obj.reviewed_by is not None:
-        if payload.exit_plate is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phiên gửi xe đã qua duyệt ngoại lệ, bắt buộc phải cung cấp biển số ra (exit_plate) để xác nhận.",
-            )
-        # Biển số gửi lên lúc checkout được đối soát với biển ra đã duyệt hoặc biển vào gốc
+        exit_plate_to_check = payload.exit_plate
+        if not exit_plate_to_check:
+            # Tự động lấy biển ra đã duyệt (hoặc biển vào gốc) nếu nhân viên không truyền exit_plate
+            exit_plate_to_check = session_obj.exit_plate or session_obj.entry_plate
+            session_obj.exit_plate = exit_plate_to_check
+
         allowed_plates = [p for p in (session_obj.exit_plate, session_obj.entry_plate) if p]
-        if normalize_plate(payload.exit_plate) not in [normalize_plate(p) for p in allowed_plates]:
+        if exit_plate_to_check and normalize_plate(exit_plate_to_check) not in [normalize_plate(p) for p in allowed_plates]:
             target_desc = " / ".join(f"'{p}'" for p in allowed_plates)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    f"Biển số ra '{payload.exit_plate}' không khớp với biển số đã được nhân viên vận hành "
+                    f"Biển số ra '{exit_plate_to_check}' không khớp với biển số đã được nhân viên vận hành "
                     f"phê duyệt ngoại lệ ({target_desc})."
                 ),
             )
     # Trường hợp 2: Phiên chưa từng được nhân viên duyệt ngoại lệ (reviewed_by is None)
     else:
-        # Nếu phiên có ghi nhận biển số vào (entry_plate): bắt buộc phải gửi exit_plate để đối soát
+        # Nếu phiên có ghi nhận biển số vào (entry_plate):
         if session_obj.entry_plate:
-            if payload.exit_plate is None:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Phiên gửi xe #{session_obj.session_code} có ghi nhận biển số lúc vào ('{session_obj.entry_plate}'). "
-                        f"Camera lối ra chưa ghi nhận được biển số; nhân viên vui lòng nhập biển số xe lúc ra (exit_plate) để đối soát an ninh."
+            if not payload.exit_plate or not payload.exit_plate.strip():
+                # Tự động gán exit_plate = entry_plate theo xác nhận tại trạm của Operator
+                session_obj.exit_plate = session_obj.entry_plate
+                audit = AuditLog(
+                    user_id=current_user.id,
+                    action="MANUAL_CHECKOUT_AUTO_MATCH",
+                    resource_type="parking_sessions",
+                    resource_id=str(session_obj.id),
+                    details=(
+                        f"Nhân viên '{current_user.username}' ({current_user.role.value}) thanh toán thủ công không truyền exit_plate; "
+                        f"hệ thống tự động gán exit_plate = entry_plate ('{session_obj.entry_plate}') theo xác nhận tại trạm."
                     ),
                 )
-            if normalize_plate(payload.exit_plate) != normalize_plate(session_obj.entry_plate):
+                db.add(audit)
+            elif normalize_plate(payload.exit_plate) != normalize_plate(session_obj.entry_plate):
                 session_obj.exit_plate = payload.exit_plate.strip()
                 if payload.exit_image_url is not None:
                     session_obj.exit_image_url = payload.exit_image_url
