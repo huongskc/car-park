@@ -28,7 +28,7 @@ class CommandService:
         self,
         device_id: str,
         payload: CommandSend,
-        current_user: User,
+        current_user: Optional[User],
         db: Session,
     ) -> Command:
         """
@@ -49,7 +49,7 @@ class CommandService:
 
         # 2. Phân quyền theo mức độ rủi ro (Risk-based RBAC: Kiểm tra trước trạng thái phần cứng)
         if payload.action in [CommandAction.REBOOT, CommandAction.UPDATE_CONFIG]:
-            if current_user.role != UserRole.ADMIN:
+            if current_user and current_user.role != UserRole.ADMIN:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Chỉ Quản trị viên (ADMIN) mới có quyền thực thi lệnh kỹ thuật '{payload.action.value}'.",
@@ -105,18 +105,19 @@ class CommandService:
             gate_id=payload.gate_id,
             action=payload.action,
             status=CommandStatus.SENT,
-            sent_by_user_id=current_user.id,
+            sent_by_user_id=current_user.id if current_user else None,
         )
         db.add(new_command)
 
         # 5. Ghi vết kiểm toán bảo mật (Audit Log)
+        actor_desc = f"Người dùng '{current_user.username}'" if current_user else "[TỰ ĐỘNG - CORE ENGINE]"
         audit = AuditLog(
-            user_id=current_user.id,
+            user_id=current_user.id if current_user else None,
             action=f"BARRIER_{payload.action.value}",
             resource_type="devices",
             resource_id=device.id,
             details=(
-                f"Phát lệnh {payload.action.value} cho cổng {payload.gate_id.value} tại trạm {device.id} "
+                f"{actor_desc} phát lệnh {payload.action.value} cho cổng {payload.gate_id.value} tại trạm {device.id} "
                 f"(Mã lệnh: {command_id}). Lý do: {payload.reason or 'Không có'}"
             ),
         )

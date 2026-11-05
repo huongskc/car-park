@@ -16,6 +16,7 @@ from app.models.session import ParkingSession
 from app.models.telemetry import TelemetryLog
 from app.models.alert import Alert
 from app.services.mqtt_service import mqtt_service, MQTTService
+from app.services.websocket_manager import websocket_manager
 
 logger = logging.getLogger("smart_parking.iot_listener")
 
@@ -437,6 +438,14 @@ class IoTListener:
                     if slot.status != new_status:
                         logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
                         slot.status = new_status
+                        websocket_manager.broadcast_sync(
+                            "SLOT_STATUS_CHANGED",
+                            {
+                                "slot_id": slot.id,
+                                "status": new_status.value,
+                                "last_distance_cm": distance_cm,
+                            },
+                        )
 
             # Cập nhật mốc nhận tín hiệu của thiết bị
             device.last_heartbeat_at = func.now()

@@ -18,6 +18,28 @@ const tbl=(h,r)=>`<div class="tw"><table><thead><tr>${h.map(x=>`<th>${x}</th>`).
 const kpi=(l,v,c)=>`<div class="kpi ${c}"><b>${v}</b>${l}</div>`;
 const OP=()=>LV[S.role]>=2, AD=()=>S.role==='ADMIN';
 const origin=()=>API.replace(/\/api\/v1$/,'');
+let wsClient=null;
+function initWs(){
+  if(!S||S.demo||wsClient)return;
+  try{
+    const u=origin().replace(/^http/,'ws')+'/ws';
+    wsClient=new WebSocket(u);
+    wsClient.onmessage=e=>{
+      try{
+        const m=JSON.parse(e.data);
+        if(m.event==='SLOT_STATUS_CHANGED'||m.event==='CAR_ENTERED'||m.event==='CAR_EXITED'||m.event==='BARRIER_STATUS'){
+          const pg=location.hash.slice(2).split('/')[0]||'dashboard';
+          if(['dashboard','gate','parking'].includes(pg)){
+            const l=$('#live');if(l&&PAGES[pg]?.live)PAGES[pg].live().then(h=>{const el=$('#live');if(el)el.innerHTML=h}).catch(()=>{});
+          }
+        }
+        if(m.event==='NEW_ALERT')toast(m.data?.message||'Cảnh báo an ninh mới!',m.data?.severity==='CRITICAL');
+      }catch(_){}
+    };
+    wsClient.onclose=()=>{wsClient=null;setTimeout(initWs,4000)};
+    wsClient.onerror=()=>{try{wsClient.close()}catch(_){}wsClient=null};
+  }catch(_){}
+}
 function toast(m,err){const t=$('#toast');t.textContent=m;t.className='on'+(err?' e':'');clearTimeout(toast.t);toast.t=setTimeout(()=>t.className='',4000)}
 async function api(p,o={}){
   if(S?.demo)return mock(p,o);
@@ -27,9 +49,9 @@ async function api(p,o={}){
   if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Dữ liệu gửi lên không hợp lệ.');
   return d;
 }
-function logout(){S=null;localStorage.removeItem('sess');render()}
+function logout(){if(wsClient){try{wsClient.close()}catch(_){}wsClient=null}S=null;localStorage.removeItem('sess');render()}
 async function doLogin(ev){ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));
-  API=d.api.replace(/\/$/,'');localStorage.setItem('api',API);S=null;
+  S=null;
   try{S=await api('/auth/login',{method:'POST',body:{username:d.username,password:d.password}});localStorage.setItem('sess',JSON.stringify(S));location.hash='#/dashboard';render()}
   catch(x){toast(x.message==='Failed to fetch'?'Không kết nối được backend tại '+API:x.message,1)}}
 async function F(ev,n){ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));try{toast(await ACT[n](d));render()}catch(x){toast(x.message,1)}}
@@ -130,13 +152,14 @@ const PAGES={
 };
 const NAV=[['Quản lý tài khoản'],['profile','Hồ sơ'],['users','Quản lý tài khoản'],['Quản lý và vận hành bãi xe'],['dashboard','Dashboard'],['gate','Vận hành cổng'],['parking','Lượt gửi xe / Thẻ / Biểu phí'],['Quản lý và giám sát thiết bị IoT'],['devices','Quản lý thiết bị'],['monitor','Dữ liệu / Cảnh báo / Nhật ký']];
 
-function loginView(){return `<div class="login"><form onsubmit="doLogin(event)"><h1><span class="lg">P</span>Hệ thống quản lý bãi đỗ xe</h1><label>Tên đăng nhập<input name="username" required autofocus></label><label>Mật khẩu<input name="password" type="password" required></label><details class="adv" style="margin:8px 0;font-size:12px"><summary style="cursor:pointer;color:var(--mute)">Cấu hình nâng cao</summary><label style="margin-top:6px">Địa chỉ API backend<input name="api" value="${esc(API)}" required></label></details><button class="go">Đăng nhập</button><p class="note">Chưa có backend? Xem thử bằng dữ liệu mẫu:</p><div class="row" style="margin:0"><button type="button" class="sec sm" onclick="demo('ADMIN')">Admin</button><button type="button" class="sec sm" onclick="demo('OPERATOR')">Vận hành</button><button type="button" class="sec sm" onclick="demo('VIEWER')">Người xem</button></div></form></div>`}
+function loginView(){return `<div class="login"><form onsubmit="doLogin(event)"><h1><span class="lg">P</span>Hệ thống quản lý bãi đỗ xe</h1><label>Tên đăng nhập<input name="username" required autofocus></label><label>Mật khẩu<input name="password" type="password" required></label><button class="go">Đăng nhập</button><p class="note">Chưa có backend? Xem thử bằng dữ liệu mẫu:</p><div class="row" style="margin:0"><button type="button" class="sec sm" onclick="demo('ADMIN')">Admin</button><button type="button" class="sec sm" onclick="demo('OPERATOR')">Vận hành</button><button type="button" class="sec sm" onclick="demo('VIEWER')">Người xem</button></div></form></div>`}
 function demo(role){S={access_token:'demo',demo:true,role,username:role.toLowerCase(),full_name:{ADMIN:'Quản trị viên (demo)',OPERATOR:'Nhân viên vận hành (demo)',VIEWER:'Người xem (demo)'}[role],user_id:{ADMIN:1,OPERATOR:2,VIEWER:3}[role]};localStorage.setItem('sess',JSON.stringify(S));location.hash='#/dashboard';render()}
 
 async function render(){
   clearInterval(timer);
   const myEpoch=++renderEpoch;
   if(!S){$('#app').innerHTML=loginView();return}
+  if(!S.demo)initWs();
   const[pg='dashboard',t0]=location.hash.slice(2).split('/');const P=PAGES[pg];
   if(!P||LV[S.role]<LV[P.lv]){location.hash='#/dashboard';if(pg!=='dashboard')return}
   const cur=PAGES[P&&LV[S.role]>=LV[P.lv]?pg:'dashboard'],key=P&&LV[S.role]>=LV[P.lv]?pg:'dashboard';

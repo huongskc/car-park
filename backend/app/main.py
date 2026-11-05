@@ -17,7 +17,15 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger("smart_parking.main")
 
 from app.config import settings
-from app.services import mqtt_service, setup_iot_listeners, command_service, device_service
+from app.services import (
+    mqtt_service,
+    setup_iot_listeners,
+    command_service,
+    device_service,
+    iot_listener,
+    parking_engine,
+    websocket_manager,
+)
 from app.routers import (
     auth_router,
     users_router,
@@ -31,6 +39,7 @@ from app.routers import (
     alpr_router,
     tariffs_router,
     telemetry_router,
+    websocket_router,
 )
 
 
@@ -51,6 +60,11 @@ async def lifespan(app: FastAPI):
         )
 
     setup_iot_listeners()
+    try:
+        websocket_manager.set_event_loop(asyncio.get_running_loop())
+    except RuntimeError:
+        pass
+    iot_listener.register_rfid_hook(parking_engine.process_rfid_event)
     mqtt_service.start()
 
     async def _system_sweeper():
@@ -109,6 +123,7 @@ app.include_router(commands_router, prefix="/api/v1")
 app.include_router(alpr_router, prefix="/api/v1")
 app.include_router(tariffs_router, prefix="/api/v1")
 app.include_router(telemetry_router, prefix="/api/v1")
+app.include_router(websocket_router)
 
 
 @app.get(
