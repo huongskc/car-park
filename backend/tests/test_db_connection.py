@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import engine
 
-def test_connection():
+def check_connection():
     print(f"Connecting to MySQL database '{settings.DB_NAME}' on {settings.DB_HOST}:{settings.DB_PORT} as '{settings.DB_USER}'...")
     try:
         with engine.connect() as conn:
@@ -17,13 +17,13 @@ def test_connection():
             version = result.scalar()
             print(f"[SUCCESS] Connected to MySQL successfully! Version: {version}")
             
-            # Check existing tables in smart_parking_db
+            # Read-only inspection of the selected database.
             tables = conn.execute(text("SHOW TABLES")).fetchall()
             table_names = [t[0] for t in tables]
             print(f"[INFO] Tables found ({len(table_names)}): {table_names}")
             
             if len(table_names) == 0:
-                print("[WARNING] No tables found in database. Please run database/schema.sql and database/seed.sql!")
+                print("[WARNING] No tables found in database.")
             else:
                 print(f"[SUCCESS] Database '{settings.DB_NAME}' is ready with {len(table_names)} tables!")
             
@@ -33,6 +33,10 @@ def test_connection():
         print(f"[ERROR] Database connection failed: {e}")
         return False
 
+def test_connection():
+    assert check_connection(), "MySQL connection or schema inspection failed"
+
+
 if __name__ == "__main__":
-    success = test_connection()
+    success = check_connection()
     sys.exit(0 if success else 1)

@@ -73,6 +73,8 @@ CREATE TABLE `cards` (
     `card_type` ENUM('VISITOR', 'MONTHLY') NOT NULL DEFAULT 'VISITOR',
     `owner_name` VARCHAR(100) NULL,
     `registered_plate` VARCHAR(20) NULL,
+    `valid_from` DATE NULL,
+    `valid_until` DATE NULL,
     `is_active` BOOLEAN NOT NULL DEFAULT TRUE,
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -99,9 +101,10 @@ CREATE TABLE `parking_sessions` (
     `session_code` VARCHAR(50) NOT NULL UNIQUE,
     `card_uid` VARCHAR(50) NOT NULL,
     `slot_id` VARCHAR(20) NULL,
+    `device_id` VARCHAR(50) NULL,
     `tariff_id` INT NOT NULL,
-    `status` ENUM('ACTIVE', 'COMPLETED', 'PENDING_REVIEW', 'CANCELLED') NOT NULL DEFAULT 'ACTIVE',
-    `entry_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `status` ENUM('ENTRY_PENDING', 'ACTIVE', 'EXIT_READY', 'PENDING_REVIEW', 'PAID_WAITING_EXIT', 'COMPLETED', 'CANCELLED') NOT NULL DEFAULT 'ENTRY_PENDING',
+    `entry_time` DATETIME NULL,
     `entry_plate` VARCHAR(20) NULL,
     `entry_image_url` VARCHAR(255) NULL,
     `exit_time` DATETIME NULL,
@@ -119,6 +122,7 @@ CREATE TABLE `parking_sessions` (
     INDEX `idx_sessions_active_lookup` (`card_uid`, `status`),
     CONSTRAINT `fk_sessions_card` FOREIGN KEY (`card_uid`) REFERENCES `cards`(`uid`) ON DELETE RESTRICT,
     CONSTRAINT `fk_sessions_slot` FOREIGN KEY (`slot_id`) REFERENCES `slots`(`id`) ON DELETE SET NULL,
+    CONSTRAINT `fk_sessions_device` FOREIGN KEY (`device_id`) REFERENCES `devices`(`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_sessions_tariff` FOREIGN KEY (`tariff_id`) REFERENCES `tariffs`(`id`) ON DELETE RESTRICT,
     CONSTRAINT `fk_sessions_reviewer` FOREIGN KEY (`reviewed_by`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -144,6 +148,7 @@ DROP TABLE IF EXISTS `commands`;
 CREATE TABLE `commands` (
     `id` VARCHAR(50) PRIMARY KEY,
     `device_id` VARCHAR(50) NOT NULL,
+    `session_id` INT NULL,
     `gate_id` ENUM('GATE_IN', 'GATE_OUT') NOT NULL,
     `action` ENUM('OPEN', 'CLOSE', 'REBOOT', 'UPDATE_CONFIG') NOT NULL,
     `status` ENUM('PENDING', 'SENT', 'ACKED', 'FAILED', 'EXPIRED') NOT NULL DEFAULT 'PENDING',
@@ -155,6 +160,7 @@ CREATE TABLE `commands` (
     INDEX `idx_commands_device_status` (`device_id`, `status`),
     INDEX `idx_commands_sent_at` (`sent_at`),
     CONSTRAINT `fk_commands_device` FOREIGN KEY (`device_id`) REFERENCES `devices`(`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_commands_session` FOREIGN KEY (`session_id`) REFERENCES `parking_sessions`(`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_commands_user` FOREIGN KEY (`sent_by_user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

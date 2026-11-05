@@ -31,10 +31,10 @@ INSERT INTO `device_configs` (`device_id`, `distance_threshold_cm`, `servo_open_
 INSERT INTO `slots` (`id`, `name`, `site_id`, `device_id`, `status`, `last_distance_cm`) VALUES
 ('SLOT_A1', 'Ô đỗ Ô tô Số 1 (Làn chính)', 'PTIT_ZONE_1', 'ESP32_GATE_01', 'EMPTY', 50.00);
 
-INSERT INTO `cards` (`uid`, `card_type`, `owner_name`, `registered_plate`, `is_active`) VALUES
-('A1B2C3D4', 'VISITOR', 'Khách vãng lai 01', NULL, 1),
-('E5F6G7H8', 'MONTHLY', 'Nguyễn Văn Hưởng', '30A-999.88', 1),
-('F9E8D7C6', 'VISITOR', 'Khách vãng lai 02 (Thẻ bị khóa)', NULL, 0);
+INSERT INTO `cards` (`uid`, `card_type`, `owner_name`, `registered_plate`, `valid_from`, `valid_until`, `is_active`) VALUES
+('A1B2C3D4', 'VISITOR', 'Khách vãng lai 01', NULL, NULL, NULL, 1),
+('E5F6G7H8', 'MONTHLY', 'Nguyễn Văn Hưởng', '30A-999.88', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 29 DAY), 1),
+('F9E8D7C6', 'VISITOR', 'Khách vãng lai 02 (Thẻ bị khóa)', NULL, NULL, NULL, 0);
 
 INSERT INTO `tariffs` (`id`, `name`, `fee_type`, `flat_rate`, `hourly_rate`, `grace_period_mins`, `is_active`) VALUES
 (1, 'Vé lượt Ô tô Tiêu chuẩn (20k/lượt)', 'FLAT', 20000.00, 0.00, 5, 1);

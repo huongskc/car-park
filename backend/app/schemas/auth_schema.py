@@ -10,6 +10,11 @@ class LoginRequest(BaseModel):
     password: str = Field(..., description="Mật khẩu người dùng", examples=["admin123"])
 
 
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
+
+
 class TokenResponse(BaseModel):
     """Schema trả về access token sau khi đăng nhập thành công."""
     access_token: str = Field(..., description="JWT Bearer Token")

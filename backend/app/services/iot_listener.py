@@ -202,6 +202,11 @@ class IoTListener:
             if not self._verify_device_message(db, device, payload, topic):
                 return
 
+            if device.status != DeviceStatus.ACTIVATED:
+                logger.warning("[IoT Listener] Bỏ qua status từ thiết bị '%s' ở trạng thái %s",
+                               device.id, device.status.value)
+                return
+
             raw_status = payload.get("status")
             is_offline = isinstance(raw_status, str) and raw_status.lower() == "offline"
 
@@ -369,22 +374,30 @@ class IoTListener:
 
                 active_session = db.query(ParkingSession).filter(
                     ParkingSession.slot_id == slot.id,
-                    ParkingSession.status.in_([SessionStatus.ACTIVE, SessionStatus.PENDING_REVIEW]),
+                    ParkingSession.status.in_([
+                        SessionStatus.ENTRY_PENDING, SessionStatus.ACTIVE,
+                        SessionStatus.EXIT_READY, SessionStatus.PENDING_REVIEW,
+                        SessionStatus.PAID_WAITING_EXIT,
+                    ]),
                 ).with_for_update().first()
 
                 # Kiểm tra trạng thái bảo trì quản trị (Grill-Me đã chốt)
                 if active_session:
-                    slot.status = SlotStatus.OCCUPIED
-                    if not is_occupied:
+                    if is_occupied:
+                        slot.status = SlotStatus.OCCUPIED
+                    elif slot.status == SlotStatus.EMPTY:
+                        slot.status = SlotStatus.RESERVED
+                    if (not is_occupied and active_session.status == SessionStatus.ACTIVE
+                            and slot.status == SlotStatus.RESERVED):
                         # Grace period: cho phép xe di chuyển từ cổng vào ô đỗ (mặc định 180s)
-                        session_start = active_session.entry_time or active_session.created_at
+                        session_start = active_session.entry_time
                         is_within_grace = False
                         if session_start:
                             elapsed = (datetime.now() - session_start).total_seconds()
                             if elapsed <= settings.ENTRY_GRACE_PERIOD_SEC:
                                 is_within_grace = True
 
-                        if not is_within_grace:
+                        if session_start and not is_within_grace:
                             existing_alert = (
                                 db.query(Alert)
                                 .filter(
@@ -430,9 +443,6 @@ class IoTListener:
                             db.add(maint_alert)
                             logger.warning(f"[IoT Listener] Vi phạm đỗ xe tại ô bảo trì '{slot.id}'!")
                     # Giữ nguyên trạng thái MAINTENANCE
-                elif slot.status == SlotStatus.RESERVED:
-                    # Giữ nguyên trạng thái RESERVED
-                    pass
                 else:
                     new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
                     if slot.status != new_status:
@@ -633,6 +643,11 @@ class IoTListener:
 
             # Xác thực token thiết bị chống giả mạo
             if not self._verify_device_message(db, device, payload, topic):
+                return
+
+            if device.status != DeviceStatus.ACTIVATED:
+                logger.warning("[IoT Listener] Bỏ qua ACK từ thiết bị '%s' ở trạng thái %s",
+                               device.id, device.status.value)
                 return
 
             command_service.process_ack(payload, db, topic_device_id=device_id)

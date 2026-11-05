@@ -7,6 +7,7 @@ from app.models.enums import SlotStatus
 class SlotStatusUpdate(BaseModel):
     """Schema cập nhật trạng thái ô đỗ (bảo trì, đặt trước, v.v.)."""
     status: SlotStatus = Field(..., description="Trạng thái mới của ô đỗ (EMPTY, OCCUPIED, RESERVED, MAINTENANCE)")
+    reason: str = Field(..., min_length=3, max_length=255, description="Lý do sau khi kiểm tra ô thực tế")
 
 
 class SlotOut(BaseModel):

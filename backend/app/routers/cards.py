@@ -73,6 +73,11 @@ def create_card(
     - Kiểm tra mã UID vật lý chưa tồn tại trong hệ thống.
     - Mặc định trạng thái kích hoạt (`is_active = True`).
     """
+    if payload.card_type == CardType.MONTHLY:
+        if not payload.registered_plate or not payload.valid_from or not payload.valid_until:
+            raise HTTPException(400, "Thẻ tháng cần biển đăng ký và kỳ hiệu lực.")
+        if payload.valid_until < payload.valid_from:
+            raise HTTPException(400, "Ngày hết hạn phải sau ngày bắt đầu.")
     existing_card = db.query(Card).filter(Card.uid == payload.uid).first()
     if existing_card:
         raise HTTPException(
@@ -85,6 +90,8 @@ def create_card(
         card_type=payload.card_type,
         owner_name=payload.owner_name,
         registered_plate=payload.registered_plate,
+        valid_from=payload.valid_from,
+        valid_until=payload.valid_until,
         is_active=True,
     )
     db.add(new_card)

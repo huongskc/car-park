@@ -33,7 +33,10 @@ class TariffFeeType(str, Enum):
 
 
 class SessionStatus(str, Enum):
+    ENTRY_PENDING = "ENTRY_PENDING"
     ACTIVE = "ACTIVE"
+    EXIT_READY = "EXIT_READY"
+    PAID_WAITING_EXIT = "PAID_WAITING_EXIT"
     COMPLETED = "COMPLETED"
     PENDING_REVIEW = "PENDING_REVIEW"
     CANCELLED = "CANCELLED"

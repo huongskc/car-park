@@ -38,6 +38,8 @@ def send_device_command(
     - Lưu bản ghi lệnh ở trạng thái `SENT` và bắn bản tin MQTT JSON tới ESP32.
     - Tự động ghi vết kiểm toán vào bảng `audit_logs`.
     """
+    if payload.action == CommandAction.OPEN and not (payload.reason or "").strip():
+        raise HTTPException(status_code=400, detail="Mở cổng trực tiếp cần nhập lý do.")
     return command_service.send_command(
         device_id=device_id,
         payload=payload,

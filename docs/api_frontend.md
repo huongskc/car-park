@@ -1,5 +1,8 @@
 # Tài liệu REST API Backend — Smart Parking IoT
 
+> Luồng nghiệp vụ và trạng thái phiên sau migration được mô tả trong
+> [business_flow.md](business_flow.md).
+
 Tích hợp nhận diện biển số: xem [ALPR API](alpr_integration.md) để chụp và lấy
 ảnh qua backend bằng JWT, không đưa khóa AI service xuống trình duyệt.
 
@@ -60,12 +63,11 @@ Authorization: Bearer <access_token>
   {
     "id": 1,
     "username": "admin",
-    "email": "admin@parking.ptit.edu.vn",
-    "full_name": "Quản Trị Viên Hệ Thống",
+    "email": "admin@ptit.edu.vn",
+    "full_name": "Quản trị viên Hệ thống",
     "role": "ADMIN",
     "is_active": true,
-    "created_at": "2026-10-15T00:00:00",
-    "updated_at": "2026-10-15T00:00:00"
+    "created_at": "2026-10-15T00:00:00"
   }
   ```
 - **cURL Example**:
@@ -73,6 +75,10 @@ Authorization: Bearer <access_token>
   curl -X GET "http://localhost:8000/api/v1/auth/me" \
     -H "Authorization: Bearer $TOKEN"
   ```
+
+#### `PATCH /auth/me` — Cập nhật hồ sơ của chính mình
+- **Body**: `{"full_name":"Nguyễn Văn A","email":"a@example.com"}`. Có thể gửi một trong hai trường; email trùng tài khoản khác bị từ chối.
+- **Quyền**: Người dùng đã đăng nhập, không đổi vai trò hay tên đăng nhập.
 
 ---
 
@@ -197,7 +203,8 @@ Authorization: Bearer <access_token>
 - **Body**:
   ```json
   {
-    "status": "MAINTENANCE"
+    "status": "MAINTENANCE",
+    "reason": "Đã kiểm tra thực tế, cảm biến cần bảo trì"
   }
   ```
 - **cURL Example**:
@@ -205,7 +212,7 @@ Authorization: Bearer <access_token>
   curl -X PATCH "http://localhost:8000/api/v1/slots/SLOT_A1/status" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"status\": \"MAINTENANCE\"}"
+    -d "{\"status\": \"MAINTENANCE\", \"reason\": \"Đã kiểm tra thực tế\"}"
   ```
 
 #### `GET /slots/{id}/telemetry` — Xem lịch sử đo cảm biến siêu âm theo ô đỗ (VIEWER, OPERATOR, ADMIN)
@@ -238,108 +245,25 @@ Authorization: Bearer <access_token>
 
 ### 2.5 Phân hệ Phiên gửi xe & Thu phí (`/sessions`) — Quyền: `OPERATOR`, `ADMIN`
 
-#### `GET /sessions` — Danh sách phiên xe
-- **Query Params**: `skip`, `limit`, `status` (`ACTIVE`, `COMPLETED`, `PENDING_REVIEW`, `CANCELLED`), `search` (biển số, UID, session code).
-- **cURL Example**:
-  ```bash
-  curl -X GET "http://localhost:8000/api/v1/sessions?status=ACTIVE" \
-    -H "Authorization: Bearer $TOKEN"
-  ```
+`GET /sessions` hỗ trợ `skip`, `limit`, `status`, `search`; `GET /sessions/{id}`
+trả chi tiết phiên. Các trạng thái mới là `ENTRY_PENDING`, `EXIT_READY`,
+`PAID_WAITING_EXIT`. Các thao tác ghi dữ liệu đều yêu cầu Bearer token của
+`OPERATOR` hoặc `ADMIN`.
 
-#### `POST /sessions` — Tạo phiên xe vào
-- **Body**:
-  ```json
-  {
-    "card_uid": "A1B2C3D4",
-    "slot_id": "SLOT_A1",
-    "entry_plate": "30A-999.88",
-    "entry_image_url": "/images/in_20261017_01.jpg"
-  }
-  ```
-- **Response `201 Created`**:
-  ```json
-  {
-    "id": 105,
-    "session_code": "SS_20261017_153000_1234",
-    "card_uid": "A1B2C3D4",
-    "slot_id": "SLOT_A1",
-    "status": "ACTIVE",
-    "entry_time": "2026-10-17T15:30:00",
-    "entry_plate": "30A-999.88",
-    "entry_image_url": "/images/in_20261017_01.jpg",
-    "fee_amount": 0.0,
-    "is_paid": false
-  }
-  ```
-- **cURL Example**:
-  ```bash
-  curl -X POST "http://localhost:8000/api/v1/sessions" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"card_uid\": \"A1B2C3D4\", \"slot_id\": \"SLOT_A1\", \"entry_plate\": \"30A-999.88\", \"entry_image_url\": \"/images/in_01.jpg\"}"
-  ```
+| Thao tác | Body | Kết quả |
+| --- | --- | --- |
+| `POST /sessions` | `{"card_uid":"A1B2C3D4","device_id":"ESP32_GATE_01","entry_plate":null}` | Backend tự cấp ô `EMPTY`, tạo `ENTRY_PENDING` và giữ ô `RESERVED`. Có biển hợp lệ thì gửi lệnh cổng vào. |
+| `PATCH /sessions/{id}/entry-plate` | `{"plate":"30A-123.45","note":"Đã xem ảnh"}` | Xác nhận hoặc sửa OCR; thẻ tháng phải khớp biển đăng ký. |
+| `POST /sessions/{id}/prepare-exit` | `{"exit_plate":"30A-123.45"}` | Biển khớp thành `EXIT_READY`; thiếu/lệch thành `PENDING_REVIEW`. |
+| `PATCH /sessions/{id}/resolve-plate` | `{"approved":true,"note":"Đã kiểm tra ảnh","actual_exit_plate":"30A-123.45"}` | Duyệt trực tiếp sang `EXIT_READY`; không cần quẹt lại. |
+| `POST /sessions/{id}/checkout` | `{"payment_method":"CASH"}` | Chỉ nhận `EXIT_READY`; ghi một payment và trả `PAID_WAITING_EXIT` (HTTP 202). `SIMULATED_MOMO` chỉ là giả lập. |
+| `POST /sessions/{id}/retry-gate` | Không cần body | Gửi lại lệnh khi lệnh cũ đã `FAILED` hoặc `EXPIRED`; không tạo thêm payment. |
+| `POST /sessions/{id}/cancel-entry` | `{"reason":"Xe quay đầu","confirmed_departure":false}` | Hủy lượt vào đang chờ khi không còn lệnh `SENT`. Ô `OCCUPIED` cần `confirmed_departure=true` và vẫn chờ xác nhận trống trước khi cấp lại. |
+| `POST /sessions/{id}/cancel` | `{"reason":"Xe đã rời sau xác minh","confirmed_exit":true}` | Hủy ngoại lệ phiên `PENDING_REVIEW` chưa thanh toán; ô vẫn chờ cảm biến báo trống hoặc nhân viên cập nhật sau kiểm tra. |
 
-#### `PATCH /sessions/{id}/resolve-plate` — Duyệt ngoại lệ lệch biển số lúc ra
-- **Nghiệp vụ**:
-  - `approved: true`: Cho phép xe ra, cập nhật trạng thái về `ACTIVE` để tiếp tục checkout. Có thể truyền thêm `actual_exit_plate` để đính chính lại biển số ra thực tế nếu camera ALPR nhận diện sai.
-  - `approved: false`: Từ chối cho ra. Phiên giữ nguyên `PENDING_REVIEW` và ô đỗ giữ nguyên `OCCUPIED` (do phương tiện chưa được xác minh rời bãi). Lưu lý do và ghi nhận audit log.
-- **Body**:
-  ```json
-  {
-    "approved": true,
-    "note": "Đã đối chiếu giấy đăng ký xe và CMND hợp lệ",
-    "actual_exit_plate": "30A-111.11"
-  }
-  ```
-- **cURL Example**:
-  ```bash
-  curl -X PATCH "http://localhost:8000/api/v1/sessions/105/resolve-plate" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"approved\": true, \"note\": \"Đã đối chiếu giấy tờ xe trùng khớp\", \"actual_exit_plate\": \"30A-111.11\"}"
-  ```
-
-#### `POST /sessions/{id}/cancel` — Hủy phiên gửi xe ngoại lệ và giải phóng ô (OPERATOR & ADMIN)
-- **Nghiệp vụ**:
-  - Lối xử lý ngoại lệ dành cho `OPERATOR` và `ADMIN` khi phương tiện gặp sự cố đặc biệt hoặc đã được dời khỏi bãi thủ công.
-  - Điều kiện: Phiên phải ở trạng thái `PENDING_REVIEW` và chưa thanh toán (`is_paid = false`). Bắt buộc `confirmed_exit: true`.
-  - Kết quả: Phiên chuyển `CANCELLED`, ô đỗ gắn với phiên được giải phóng về `EMPTY`, ghi vết kiểm toán bắt buộc vào `audit_logs`.
-- **Body**:
-  ```json
-  {
-    "reason": "Xe đã dời bãi ngoài thực địa sau khi đối chiếu giấy tờ",
-    "confirmed_exit": true
-  }
-  ```
-- **cURL Example**:
-  ```bash
-  curl -X POST "http://localhost:8000/api/v1/sessions/105/cancel" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"reason\": \"Xe đã dời bãi ngoài thực địa\", \"confirmed_exit\": true}"
-  ```
-
-#### `POST /sessions/{id}/checkout` — Thu phí & Kết thúc phiên xe
-- **Body**:
-  ```json
-  {
-    "payment_method": "CASH",
-    "exit_plate": "30A-999.88",
-    "exit_image_url": "/images/out_20261017_01.jpg"
-  }
-  ```
-- **Nghiệp vụ thực hiện**:
-  1. Tính toán phí gửi xe theo Biểu phí (`Tariff`).
-  2. Tạo bản ghi giao dịch `payments` thành công.
-  3. Cập nhật `exit_time`, `exit_plate`, `exit_image_url`, `status = COMPLETED`, `is_paid = true`.
-  4. Giải phóng ô đỗ gắn với phiên về `EMPTY`.
-- **cURL Example**:
-  ```bash
-  curl -X POST "http://localhost:8000/api/v1/sessions/105/checkout" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"payment_method\": \"CASH\", \"exit_plate\": \"30A-999.88\", \"exit_image_url\": \"/images/out_01.jpg\"}"
-  ```
+ACK cổng vào mới ghi `entry_time` và chuyển `ACTIVE`; ACK cổng ra mới ghi
+`exit_time` và chuyển `COMPLETED`. Cảm biến báo ô trống sau lượt ra mới cho
+cấp lại ô. Xem [business_flow.md](business_flow.md) để biết toàn bộ quy tắc.
 
 ---
 

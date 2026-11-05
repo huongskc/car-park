@@ -22,6 +22,7 @@ class CommandOut(BaseModel):
     """Schema trả về thông tin chi tiết lệnh điều khiển."""
     id: str
     device_id: str
+    session_id: Optional[int] = None
     gate_id: GateId
     action: CommandAction
     status: CommandStatus

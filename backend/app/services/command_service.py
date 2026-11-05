@@ -30,6 +30,7 @@ class CommandService:
         payload: CommandSend,
         current_user: Optional[User],
         db: Session,
+        session_id: Optional[int] = None,
     ) -> Command:
         """
         Phát lệnh điều khiển phần cứng Barrier hoặc vi điều khiển ESP32:
@@ -102,6 +103,7 @@ class CommandService:
         new_command = Command(
             id=command_id,
             device_id=device.id,
+            session_id=session_id,
             gate_id=payload.gate_id,
             action=payload.action,
             status=CommandStatus.SENT,
@@ -222,9 +224,8 @@ class CommandService:
                 synchronize_session="fetch",
             )
         )
-        db.commit()
-
         if rows_updated == 0:
+            db.commit()
             logger.info(
                 f"[Command Service] Lệnh '{command_id}' đã ở trạng thái kết thúc ({command.status.value}), "
                 f"bỏ qua ACK trùng lặp hoặc đến sau timeout."
@@ -232,10 +233,13 @@ class CommandService:
             return True
 
         if ack_status_raw == "SUCCESS":
+            from app.services.parking_flow import on_gate_ack
+            on_gate_ack(db, command)
             logger.info(f"[Command Service] Lệnh '{command_id}' đã được ESP32 thực thi thành công (ACKED)!")
         else:
             logger.warning(f"[Command Service] Lệnh '{command_id}' thất bại trên phần cứng: {reason_val}")
 
+        db.commit()
         return True
 
     def expire_stale_commands(self, timeout_seconds: int = 30, db: Optional[Session] = None) -> int:

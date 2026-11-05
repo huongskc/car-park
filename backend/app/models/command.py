@@ -8,6 +8,7 @@ class Command(Base):
 
     id = Column(String(50), primary_key=True)
     device_id = Column(String(50), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    session_id = Column(Integer, ForeignKey("parking_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     gate_id = Column(Enum(GateId), nullable=False)
     action = Column(Enum(CommandAction), nullable=False)
     status = Column(Enum(CommandStatus), nullable=False, default=CommandStatus.PENDING)

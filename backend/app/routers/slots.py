@@ -67,6 +67,8 @@ def update_slot_status(
     - Quyền truy cập: Chỉ OPERATOR và ADMIN.
     - Cho phép chuyển đổi trạng thái (ví dụ: chuyển sang MAINTENANCE khi cảm biến hỏng hoặc RESERVED khi bảo lưu).
     """
+    if len(payload.reason.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Cần nhập lý do kiểm tra thực tế.")
     slot = db.query(Slot).filter(Slot.id == slot_id).with_for_update().first()
     if not slot:
         raise HTTPException(
@@ -78,7 +80,11 @@ def update_slot_status(
         db.query(ParkingSession)
         .filter(
             ParkingSession.slot_id == slot_id,
-            ParkingSession.status.in_([SessionStatus.ACTIVE, SessionStatus.PENDING_REVIEW]),
+            ParkingSession.status.in_([
+                SessionStatus.ENTRY_PENDING, SessionStatus.ACTIVE,
+                SessionStatus.EXIT_READY, SessionStatus.PENDING_REVIEW,
+                SessionStatus.PAID_WAITING_EXIT,
+            ]),
         )
         .with_for_update()
         .first()
@@ -89,7 +95,7 @@ def update_slot_status(
             detail=(
                 f"Không thể cập nhật ô đỗ '{slot_id}' sang {payload.status.value} vì đang có phiên gửi xe chưa kết thúc "
                 f"(Phiên #{active_session.session_code}, trạng thái: {active_session.status.value}). "
-                "Vui lòng hoàn tất thanh toán (checkout) hoặc hủy phiên trước khi đổi trạng thái ô."
+                "Cần hoàn tất lượt ra qua ACK hoặc hủy phiên trước khi đổi trạng thái ô."
             ),
         )
 
@@ -102,7 +108,7 @@ def update_slot_status(
         action="UPDATE_SLOT_STATUS",
         resource_type="slots",
         resource_id=slot.id,
-        details=f"Cập nhật trạng thái ô đỗ '{slot.id}' từ {old_status.value} sang {payload.status.value}",
+        details=f"Cập nhật trạng thái ô đỗ '{slot.id}' từ {old_status.value} sang {payload.status.value}. Lý do: {payload.reason.strip()}",
     )
     db.add(audit)
 

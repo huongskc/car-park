@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 from app.models.enums import CardType
@@ -10,6 +10,8 @@ class CardCreate(BaseModel):
     card_type: CardType = Field(default=CardType.VISITOR, description="Loại thẻ (MONTHLY, VISITOR, VIP, STAFF)")
     owner_name: Optional[str] = Field(None, max_length=100, description="Họ và tên chủ sở hữu thẻ", examples=["Nguyễn Văn An"])
     registered_plate: Optional[str] = Field(None, max_length=20, description="Biển số xe đăng ký gắn với thẻ (nếu có)", examples=["29A-888.88"])
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
 
 
 class CardStatusUpdate(BaseModel):
@@ -23,6 +25,8 @@ class CardOut(BaseModel):
     card_type: CardType
     owner_name: Optional[str] = None
     registered_plate: Optional[str] = None
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

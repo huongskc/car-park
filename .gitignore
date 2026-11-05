@@ -85,4 +85,16 @@ Desktop.ini
 
 # Mosquitto Broker Secrets
 deployment/mosquitto_passwd
+deployment/mosquitto_passwd.demo
+deployment/mosquitto_passwd.demo.*.bak
+deployment/acl.demo.conf
 !deployment/mosquitto_passwd.example
+
+# Local database backups made before migrations
+.local-backups/
+
+# Local software demo and simulator tooling
+simulator/
+deployment/compose.demo.yml
+deployment/demo_broker.py
+deployment/mosquitto.demo.conf

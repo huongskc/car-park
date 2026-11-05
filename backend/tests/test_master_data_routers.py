@@ -226,7 +226,7 @@ def run_master_data_smoke_test():
         # 4.3 Phân quyền sửa trạng thái ô đỗ: VIEWER bị chặn 403
         res_vi_patch = client.patch(
             f"/api/v1/slots/{target_slot_id}/status",
-            json={"status": "MAINTENANCE"},
+            json={"status": "MAINTENANCE", "reason": "Kiểm tra tại ô"},
             headers=vi_headers,
         )
         assert res_vi_patch.status_code == 403, "Viewer không được phép sửa trạng thái ô đỗ (403 Forbidden)."
@@ -235,7 +235,7 @@ def run_master_data_smoke_test():
         # 4.4 OPERATOR chuyển trạng thái sang MAINTENANCE (Bảo trì)
         res_op_patch = client.patch(
             f"/api/v1/slots/{target_slot_id}/status",
-            json={"status": "MAINTENANCE"},
+            json={"status": "MAINTENANCE", "reason": "Kiểm tra tại ô"},
             headers=op_headers,
         )
         assert res_op_patch.status_code == 200 and res_op_patch.json()["status"] == "MAINTENANCE"
@@ -244,7 +244,7 @@ def run_master_data_smoke_test():
         # 4.5 ADMIN khôi phục trạng thái ban đầu của ô đỗ
         res_admin_restore = client.patch(
             f"/api/v1/slots/{target_slot_id}/status",
-            json={"status": original_status},
+            json={"status": original_status, "reason": "Đã kiểm tra thực tế"},
             headers=admin_headers,
         )
         assert res_admin_restore.status_code == 200 and res_admin_restore.json()["status"] == original_status

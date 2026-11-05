@@ -8,8 +8,8 @@ let timer=null,renderEpoch=0,Q={q:'',st:''};const hist={};
 const esc=s=>String(s??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const dt=s=>s?new Date(s).toLocaleString('vi-VN'):'—';
 const vnd=v=>Number(v||0).toLocaleString('vi-VN')+'đ';
-const dur=(a,b)=>{const m=Math.max(0,Math.round(((b?new Date(b):new Date())-new Date(a))/6e4));return Math.floor(m/60)+'g '+String(m%60).padStart(2,'0')+'p'};
-const ST={EMPTY:['Trống','ok'],OCCUPIED:['Có xe','bad'],RESERVED:['Đặt trước','warn'],MAINTENANCE:['Bảo trì','mute'],ACTIVE:['Đang gửi','ok'],COMPLETED:['Hoàn tất','mute'],PENDING_REVIEW:['Chờ duyệt','warn'],CANCELLED:['Đã hủy','bad'],REGISTERED:['Đã đăng ký','mute'],ACTIVATED:['Hoạt động','ok'],SUSPENDED:['Tạm ngưng','warn'],DECOMMISSIONED:['Ngừng dùng','bad'],NEW:['Mới','bad'],ACKNOWLEDGED:['Đã tiếp nhận','warn'],RESOLVED:['Đã xử lý','ok'],INFO:['Thông tin','mute'],WARNING:['Cảnh báo','warn'],CRITICAL:['Nghiêm trọng','bad'],SENT:['Đã gửi','warn'],ACKED:['Đã phản hồi','ok'],FAILED:['Thất bại','bad'],PENDING:['Chờ','mute'],EXPIRED:['Hết hạn','mute']};
+const dur=(a,b)=>{if(!a)return'—';const m=Math.max(0,Math.round(((b?new Date(b):new Date())-new Date(a))/6e4));return Math.floor(m/60)+'g '+String(m%60).padStart(2,'0')+'p'};
+const ST={EMPTY:['Trống','ok'],OCCUPIED:['Có xe','bad'],RESERVED:['Đã cấp','warn'],MAINTENANCE:['Bảo trì','mute'],ENTRY_PENDING:['Chờ biển / ACK vào','warn'],ACTIVE:['Đang gửi','ok'],EXIT_READY:['Chờ thu tiền','warn'],PAID_WAITING_EXIT:['Đã trả, chờ ACK ra','warn'],COMPLETED:['Hoàn tất','mute'],PENDING_REVIEW:['Chờ duyệt biển','warn'],CANCELLED:['Đã hủy','bad'],REGISTERED:['Đã đăng ký','mute'],ACTIVATED:['Hoạt động','ok'],SUSPENDED:['Tạm ngưng','warn'],DECOMMISSIONED:['Ngừng dùng','bad'],NEW:['Mới','bad'],ACKNOWLEDGED:['Đã tiếp nhận','warn'],RESOLVED:['Đã xử lý','ok'],INFO:['Thông tin','mute'],WARNING:['Cảnh báo','warn'],CRITICAL:['Nghiêm trọng','bad'],SENT:['Đã gửi','warn'],ACKED:['Đã phản hồi','ok'],FAILED:['Thất bại','bad'],PENDING:['Chờ','mute'],EXPIRED:['Hết hạn','mute']};
 const AT={PLATE_MISMATCH:'Lệch biển số',UNAUTHORIZED_CARD:'Thẻ không hợp lệ',DEVICE_OFFLINE:'Mất kết nối',LONG_OCCUPANCY:'Chiếm chỗ lâu',SYSTEM_ERROR:'Lỗi hệ thống / cảm biến'};
 const bd=v=>{const[t,c]=ST[v]||[v,'mute'];return `<span class="b ${c}">${esc(t)}</span>`};
 const onl=o=>`<span class="b ${o?'ok':'bad'}">${o?'Online':'Offline'}</span>`;
@@ -19,6 +19,13 @@ const kpi=(l,v,c)=>`<div class="kpi ${c}"><b>${v}</b>${l}</div>`;
 const OP=()=>LV[S.role]>=2, AD=()=>S.role==='ADMIN';
 const origin=()=>API.replace(/\/api\/v1$/,'');
 let wsClient=null;
+const imageCache=new Map();
+async function protectedImage(path){
+  if(!path||S?.demo||imageCache.has(path))return;
+  try{const r=await fetch(origin()+path,{headers:{Authorization:'Bearer '+S.access_token}});
+    if(r.ok&&r.headers.get('content-type')?.startsWith('image/'))imageCache.set(path,URL.createObjectURL(await r.blob()));
+  }catch(_){/* Camera image may not be available during a demo. */}
+}
 function initWs(){
   if(!S||S.demo||wsClient)return;
   try{
@@ -49,7 +56,7 @@ async function api(p,o={}){
   if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Dữ liệu gửi lên không hợp lệ.');
   return d;
 }
-function logout(){if(wsClient){try{wsClient.close()}catch(_){}wsClient=null}S=null;localStorage.removeItem('sess');render()}
+function logout(){if(wsClient){try{wsClient.close()}catch(_){}wsClient=null}for(const u of imageCache.values())URL.revokeObjectURL(u);imageCache.clear();S=null;localStorage.removeItem('sess');render()}
 async function doLogin(ev){ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));
   S=null;
   try{S=await api('/auth/login',{method:'POST',body:{username:d.username,password:d.password}});localStorage.setItem('sess',JSON.stringify(S));location.hash='#/dashboard';render()}
@@ -60,12 +67,18 @@ const nul=v=>v||null;
 const ACT={
   mkUser:d=>api('/users',{method:'POST',body:{...d,email:nul(d.email)}}).then(()=>'Đã tạo tài khoản.'),
   lockUser:(id,v)=>api(`/users/${id}/status`,{method:'PATCH',body:{is_active:v}}).then(()=>'Đã cập nhật tài khoản.'),
-  mkCard:d=>api('/cards',{method:'POST',body:{...d,owner_name:nul(d.owner_name),registered_plate:nul(d.registered_plate)}}).then(()=>'Đã đăng ký thẻ.'),
+  mkCard:d=>api('/cards',{method:'POST',body:{...d,owner_name:nul(d.owner_name),registered_plate:nul(d.registered_plate),valid_from:nul(d.valid_from),valid_until:nul(d.valid_until)}}).then(()=>'Đã đăng ký thẻ.'),
   lockCard:(u,v)=>api(`/cards/${u}/status`,{method:'PATCH',body:{is_active:v}}).then(()=>'Đã cập nhật thẻ.'),
-  enter:d=>api('/sessions',{method:'POST',body:{card_uid:d.card_uid,entry_plate:nul(d.entry_plate),slot_id:nul(d.slot_id)}}).then(s=>'Đã tạo phiên '+s.session_code+'.'),
-  pay:(id,m)=>api(`/sessions/${id}/checkout`,{method:'POST',body:{payment_method:m}}).then(()=>'Đã thu phí và kết thúc phiên.'),
-  review:(id,ok)=>{const note=prompt(ok?'Lý do cho xe ra:':'Lý do từ chối:');if(!note)throw new Error('Cần nhập lý do xử lý.');return api(`/sessions/${id}/resolve-plate`,{method:'PATCH',body:{approved:ok,note}}).then(()=>'Đã xử lý ngoại lệ.')},
-  cmd:(g,a)=>{const id=$('#dev')?.value;if(!id)throw new Error('Chưa chọn thiết bị.');return api(`/devices/${id}/commands`,{method:'POST',body:{gate_id:g,action:a,reason:'Thao tác từ web'}}).then(c=>'Đã gửi lệnh '+a+' ('+c.id+').')},
+  enter:d=>api('/sessions',{method:'POST',body:{card_uid:d.card_uid,device_id:$('#dev')?.value,entry_plate:nul(d.entry_plate)}}).then(s=>'Đã cấp ô '+s.slot_id+' cho phiên '+s.session_code+'. Đang chờ xác nhận biển hoặc ACK cổng vào.'),
+  entryPlate:id=>{const plate=prompt('Biển số nhìn thấy trên ảnh:');if(!plate)throw new Error('Cần nhập biển số.');const note=prompt('Lý do xác nhận/sửa OCR:');if(!note)throw new Error('Cần nhập lý do.');return api(`/sessions/${id}/entry-plate`,{method:'PATCH',body:{plate,note}}).then(()=>'Đã xác nhận biển vào.')},
+  prepareExit:id=>{const exit_plate=prompt('Biển số xe tại cổng ra (để trống nếu camera lỗi):');return api(`/sessions/${id}/prepare-exit`,{method:'POST',body:{exit_plate:nul(exit_plate)}}).then(()=>'Đã kiểm tra biển ra.')},
+  retryGate:id=>api(`/sessions/${id}/retry-gate`,{method:'POST'}).then(()=>'Đã thử gửi lại lệnh mở cổng.'),
+  cancelEntry:(id,occupied)=>{const reason=prompt('Lý do hủy lượt vào:');if(!reason)throw new Error('Cần nhập lý do.');const confirmed_departure=occupied?confirm('Cảm biến đang báo có xe. Bạn đã kiểm tra thực tế và xác nhận xe đã rời?'):false;if(occupied&&!confirmed_departure)throw new Error('Chưa xác nhận xe đã rời.');return api(`/sessions/${id}/cancel-entry`,{method:'POST',body:{reason,confirmed_departure}}).then(()=>'Đã hủy lượt vào. Ô chỉ được cấp lại khi xác nhận trống.')},
+  slotStatus:id=>{const status=prompt('Trạng thái sau khi kiểm tra ô (EMPTY, OCCUPIED, RESERVED, MAINTENANCE):');if(!status)throw new Error('Chưa chọn trạng thái.');const reason=prompt('Lý do và kết quả kiểm tra thực tế:');if(!reason)throw new Error('Cần ghi lý do.');return api(`/slots/${encodeURIComponent(id)}/status`,{method:'PATCH',body:{status:status.trim().toUpperCase(),reason}}).then(()=>'Đã cập nhật ô và ghi audit.')},
+  updateProfile:d=>api('/auth/me',{method:'PATCH',body:{full_name:d.full_name,email:nul(d.email)}}).then(u=>{S.full_name=u.full_name;localStorage.setItem('sess',JSON.stringify(S));return'Đã cập nhật hồ sơ.'}),
+  pay:(id,m)=>api(`/sessions/${id}/checkout`,{method:'POST',body:{payment_method:m}}).then(()=>'Đã ghi nhận thu phí; chờ ACK mở cổng ra.'),
+  review:(id,ok)=>{const note=prompt(ok?'Lý do cho xe ra:':'Lý do từ chối:');if(!note)throw new Error('Cần nhập lý do xử lý.');const actual_exit_plate=ok?prompt('Biển ra đã xác nhận:'):null;if(ok&&!actual_exit_plate)throw new Error('Cần xác nhận biển ra.');return api(`/sessions/${id}/resolve-plate`,{method:'PATCH',body:{approved:ok,note,actual_exit_plate}}).then(()=>'Đã xử lý ngoại lệ.')},
+  cmd:(g,a)=>{const id=$('#dev')?.value;if(!id)throw new Error('Chưa chọn thiết bị.');const reason=prompt('Lý do thao tác trực tiếp:');if(!reason)throw new Error('Cần nhập lý do.');return api(`/devices/${id}/commands`,{method:'POST',body:{gate_id:g,action:a,reason}}).then(c=>'Đã gửi lệnh '+a+' ('+c.id+').')},
   devStatus:(id,s)=>api(`/devices/${id}/status`,{method:'PATCH',body:{status:s}}).then(()=>'Đã đổi trạng thái vòng đời.'),
   mkDev:d=>api('/devices',{method:'POST',body:d}).then(x=>'Đã đăng ký thiết bị. Token: '+x.auth_token),
   alert:(id,s)=>api(`/alerts/${id}/resolve`,{method:'PATCH',body:{status:s}}).then(()=>'Đã cập nhật cảnh báo.')
@@ -74,7 +87,7 @@ const lock=(fn,id,on)=>`<button class="sm sec" onclick="C('${fn}','${esc(id)}',$
 
 /* ---------- Trang ---------- */
 async function pProfile(){const u=await api('/auth/me');
-  return `<div class="card prof"><div class="av">${esc(u.full_name[0])}</div><h2>${esc(u.full_name)}</h2><dl><dt>Tên đăng nhập</dt><dd>${esc(u.username)}</dd><dt>Email</dt><dd>${esc(u.email)}</dd><dt>Vai trò</dt><dd>${RN[u.role]}</dd><dt>Trạng thái</dt><dd>${u.is_active?bd('ACTIVATED'):'Bị khóa'}</dd><dt>Ngày tạo</dt><dd>${dt(u.created_at)}</dd></dl></div>`}
+  return `<div class="card prof"><div class="av">${esc(u.full_name[0])}</div><h2>${esc(u.full_name)}</h2><dl><dt>Tên đăng nhập</dt><dd>${esc(u.username)}</dd><dt>Email</dt><dd>${esc(u.email)}</dd><dt>Vai trò</dt><dd>${RN[u.role]}</dd><dt>Trạng thái</dt><dd>${u.is_active?bd('ACTIVATED'):'Bị khóa'}</dd><dt>Ngày tạo</dt><dd>${dt(u.created_at)}</dd></dl></div><form class="f" onsubmit="F(event,'updateProfile')"><label>Họ tên<input name="full_name" value="${esc(u.full_name)}" required maxlength="100"></label><label>Email<input name="email" type="email" value="${esc(u.email||'')}" maxlength="100"></label><button class="go">Lưu hồ sơ</button></form>`}
 
 async function pUsers(){const us=await api('/users?limit=100');
   return `<form class="f" onsubmit="F(event,'mkUser')"><label>Tên đăng nhập<input name="username" required minlength="3"></label><label>Mật khẩu<input name="password" type="password" required minlength="6"></label><label>Họ và tên<input name="full_name" required></label><label>Email<input name="email" type="email"></label><label>Vai trò<select name="role"><option value="OPERATOR">Nhân viên vận hành</option><option value="VIEWER">Người xem</option><option value="ADMIN">Quản trị viên</option></select></label><button class="go">Tạo tài khoản</button></form>`+
@@ -89,30 +102,32 @@ async function dashLive(){const op=OP();
   <h3>Cảnh báo mới</h3>${tbl(['Thời gian','Loại','Mức độ','Nội dung'],al.map(a=>tr([dt(a.created_at),AT[a.alert_type],bd(a.severity),`<span style="white-space:normal">${esc(a.message)}</span>`])))}`:'<p class="note">Tài khoản Người xem chỉ xem được sơ đồ ô đỗ.</p>')}
 
 async function pGate(){const dv=await api('/devices');
-  return `<form class="f" onsubmit="F(event,'enter')"><label>Thiết bị điều khiển<select id="dev" onchange="gateRefresh()">${dv.map(d=>`<option>${esc(d.id)}</option>`).join('')}</select></label><label>Mã thẻ (quẹt vào)<input name="card_uid" required minlength="4"></label><label>Biển số lúc vào<input name="entry_plate"></label><label>Ô đỗ<input name="slot_id" placeholder="SLOT_A1"></label><button class="go">Tạo lượt vào</button></form><div id="live"></div>`}
+  return `<form class="f" onsubmit="F(event,'enter')"><label>Thiết bị điều khiển<select id="dev" onchange="gateRefresh()">${dv.map(d=>`<option>${esc(d.id)}</option>`).join('')}</select></label><label>Mã thẻ<input name="card_uid" required minlength="4"></label><label>Biển số đã nhìn thấy (có thể để trống)<input name="entry_plate"></label><button class="go">Cấp ô và xử lý lượt vào</button></form><div id="live"></div>`}
 const gateRefresh=async()=>{const l=$('#live');if(l)try{l.innerHTML=await gateLive()}catch(x){l.innerHTML=`<div class="err">${esc(x.message)}</div>`}};
 async function gateLive(){const id=$('#dev')?.value;
-  const[cm,se]=await Promise.all([id?api(`/devices/${id}/commands?limit=20`):[],api('/sessions?limit=30')]);
+  const[cm,se,slots]=await Promise.all([id?api(`/devices/${id}/commands?limit=20`):[],api('/sessions?limit=30'),api('/slots')]);
+  await Promise.all(se.flatMap(s=>[protectedImage(s.entry_image_url),protectedImage(s.exit_image_url)]));
   const lane=(g,t)=>{const c=cm.find(x=>x.gate_id===g);let w='<span class="mt">Chưa có lệnh</span>';
-    if(c){w=`${c.action} ${bd(c.status)}<br><small class="mt">${esc(c.ack_reason||'Chờ phản hồi từ ESP32')}</small>`;
-      if(c.action==='OPEN'){const r=30-(Date.now()-new Date(c.sent_at))/1e3;w+=`<div class="cd">${r>0?'Tự đóng sau '+Math.ceil(r)+'s':'Đã hết 30s chờ đóng'}</div>`}}
+    if(c)w=`${c.action} ${bd(c.status)}<br><small class="mt">${esc(c.ack_reason||'Chờ phản hồi từ thiết bị')}</small>`;
     return `<div class="card lane"><h3>${t}</h3>${w}<div class="row"><button onclick="C('cmd','${g}','OPEN')">Mở chắn</button><button class="sec" onclick="C('cmd','${g}','CLOSE')">Đóng chắn</button></div></div>`};
-  const img=u=>u?`<img class="th" src="${esc(origin()+u)}" alt="" onerror="this.remove()">`:'—';
+  const img=u=>imageCache.has(u)?`<img class="th" src="${esc(imageCache.get(u))}" alt="Ảnh biển số">`:'—';
   const rows=se.map(s=>{const out=s.status==='COMPLETED'||s.exit_time;
-    const ck=s.exit_plate?(s.exit_plate===s.entry_plate?'<span class="b ok">Khớp</span>':'<span class="b bad">Lệch</span>'):'—';
-    const act=s.status==='ACTIVE'?`<button class="sm go" onclick="C('pay',${s.id},'CASH')">Thu tiền mặt</button> <button class="sm sec" onclick="C('pay',${s.id},'SIMULATED_MOMO')">MoMo</button>`:s.status==='PENDING_REVIEW'?`<button class="sm" onclick="C('review',${s.id},true)">Duyệt</button> <button class="sm dn" onclick="C('review',${s.id},false)">Từ chối</button>`:'';
-    return tr([esc(s.session_code),esc(s.card_uid),out?'Ra':'Vào',img(s.entry_image_url),esc(s.entry_plate),esc(s.exit_plate),ck,dur(s.entry_time,s.exit_time),vnd(s.fee_amount),bd(s.status),act])});
-  return `<div class="two">${lane('GATE_IN','Làn vào')}${lane('GATE_OUT','Làn ra')}</div><h3>Lượt gần đây</h3>`+tbl(['Phiên','Mã thẻ','Chiều','Ảnh vào','Biển vào','Biển ra','Đối chiếu','Thời gian gửi','Phí','Trạng thái',''],rows)}
+    const norm=p=>(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');const ck=s.exit_plate?(norm(s.exit_plate)===norm(s.entry_plate)?'<span class="b ok">Khớp</span>':'<span class="b bad">Lệch</span>'):'—';
+    const commands=cm.filter(c=>c.session_id===s.id),last=commands[0],waiting=commands.some(c=>c.status==='SENT');
+    const occupied=slots.some(x=>x.id===s.slot_id&&x.status==='OCCUPIED');
+    const act=s.status==='ENTRY_PENDING'?`<button class="sm" onclick="C('entryPlate',${s.id})">Xác nhận/sửa biển</button> ${s.entry_plate&&!waiting?`<button class="sm sec" onclick="C('retryGate',${s.id})">Thử mở lại</button>`:''} ${!waiting?`<button class="sm dn" onclick="C('cancelEntry',${s.id},${occupied})">Hủy lượt</button>`:''}`:s.status==='ACTIVE'?`<button class="sm" onclick="C('prepareExit',${s.id})">Xe đến cổng ra</button>`:s.status==='EXIT_READY'?`<button class="sm go" onclick="C('pay',${s.id},'CASH')">Đã thu tiền mặt</button> <button class="sm sec" onclick="C('pay',${s.id},'SIMULATED_MOMO')">MoMo giả lập</button>`:s.status==='PAID_WAITING_EXIT'&&!waiting?`<button class="sm" onclick="C('retryGate',${s.id})">Thử mở lại</button>`:s.status==='PENDING_REVIEW'?`<button class="sm" onclick="C('review',${s.id},true)">Duyệt</button> <button class="sm dn" onclick="C('review',${s.id},false)">Từ chối</button>`:'';
+    return tr([esc(s.session_code),esc(s.card_uid),esc(s.slot_id),out?'Ra':'Vào',img(s.entry_image_url),esc(s.entry_plate),img(s.exit_image_url),esc(s.exit_plate),ck,dur(s.entry_time,s.exit_time),vnd(s.fee_amount),bd(s.status),last?bd(last.status):'—',act])});
+  return `<div class="two">${lane('GATE_IN','Làn vào')}${lane('GATE_OUT','Làn ra')}</div><h3>Lượt gần đây</h3>`+tbl(['Phiên','Mã thẻ','Ô được cấp','Chiều','Ảnh vào','Biển vào','Ảnh ra','Biển ra','Đối chiếu','Thời gian gửi','Phí','Trạng thái','Lệnh cổng',''],rows)}
 
 async function pParking(tab){
   if(tab==='cards'){const cs=await api('/cards?limit=100');
-    return `<form class="f" onsubmit="F(event,'mkCard')"><label>Mã thẻ (UID)<input name="uid" required minlength="4"></label><label>Loại thẻ<select name="card_type"><option value="VISITOR">Vãng lai</option><option value="MONTHLY">Thẻ tháng</option></select></label><label>Chủ thẻ<input name="owner_name"></label><label>Biển số đăng ký<input name="registered_plate"></label><button class="go">Đăng ký thẻ</button></form>`+
-    tbl(['Mã thẻ','Loại','Chủ thẻ','Biển số đăng ký','Thời hạn','Trạng thái',''],cs.map(c=>tr([esc(c.uid),c.card_type==='MONTHLY'?'Thẻ tháng':'Vãng lai',esc(c.owner_name),esc(c.registered_plate),c.card_type==='MONTHLY'?'Từ '+dt(c.created_at):'Theo lượt',c.is_active?bd('ACTIVATED'):'<span class="b bad">Đã khóa</span>',lock('lockCard',c.uid,c.is_active)])))}
+  return `<form class="f" onsubmit="F(event,'mkCard')"><label>Mã thẻ (UID)<input name="uid" required minlength="4"></label><label>Loại thẻ<select name="card_type"><option value="VISITOR">Vãng lai</option><option value="MONTHLY">Thẻ tháng</option></select></label><label>Chủ thẻ<input name="owner_name"></label><label>Biển số đăng ký cho thẻ tháng<input name="registered_plate"></label><label>Hiệu lực từ<input name="valid_from" type="date"></label><label>Đến hết ngày<input name="valid_until" type="date"></label><button class="go">Đăng ký thẻ</button></form>`+
+    tbl(['Mã thẻ','Loại','Chủ thẻ','Biển số đăng ký','Thời hạn','Trạng thái',''],cs.map(c=>tr([esc(c.uid),c.card_type==='MONTHLY'?'Thẻ tháng':'Vãng lai',esc(c.owner_name),esc(c.registered_plate),c.card_type==='MONTHLY'?`${esc(c.valid_from)} – ${esc(c.valid_until)}`:'Theo lượt',c.is_active?bd('ACTIVATED'):'<span class="b bad">Đã khóa</span>',lock('lockCard',c.uid,c.is_active)])))}
   if(tab==='tariffs'){let t,mock=0;try{t=await api('/tariffs')}catch{mock=1;t=[{name:'Vé lượt Ô tô Tiêu chuẩn',fee_type:'FLAT',flat_rate:20000,hourly_rate:0,grace_period_mins:5,effective_from:null}]}
-    return (mock?'<p class="note">Backend chưa có endpoint /tariffs nên đang hiển thị biểu phí mẫu từ seed.sql.</p>':'')+tbl(['Biểu phí','Cách tính','Mức phí','Ân hạn','Áp dụng từ'],t.map(x=>tr([esc(x.name),x.fee_type==='FLAT'?'Đồng giá mỗi lượt':'Theo giờ',x.fee_type==='FLAT'?vnd(x.flat_rate)+'/lượt':vnd(x.hourly_rate)+'/giờ',x.grace_period_mins+' phút',dt(x.effective_from)])))+'<p class="note">Thẻ tháng được miễn phí mỗi lượt.</p>'}
+    return (mock?'<p class="note">Backend chưa có endpoint /tariffs nên đang hiển thị biểu phí mẫu từ seed.sql.</p>':'')+tbl(['Biểu phí','Cách tính','Mức phí','Ân hạn','Áp dụng từ'],t.map(x=>tr([esc(x.name),x.fee_type==='FLAT'?'Đồng giá mỗi lượt':'Theo giờ',x.fee_type==='FLAT'?vnd(x.flat_rate)+'/lượt':vnd(x.hourly_rate)+'/giờ',x.grace_period_mins+' phút',dt(x.effective_from)])))+'<p class="note">Chỉ thẻ tháng còn hạn được miễn phí; thẻ hết hạn tính phí vé lượt. HOURLY chưa được tính.</p>'}
   const q=new URLSearchParams({limit:100});if(Q.q)q.set('search',Q.q);if(Q.st)q.set('status',Q.st);
   const ss=await api('/sessions?'+q);
-  return `<form class="f" onsubmit="event.preventDefault();Q.q=this.q.value;Q.st=this.st.value;render()"><label>Tìm kiếm<input name="q" value="${esc(Q.q==='—'?'':Q.q)}" placeholder="Mã phiên, thẻ, biển số"></label><label>Trạng thái<select name="st">${[['','Tất cả'],['ACTIVE','Đang gửi'],['COMPLETED','Hoàn tất'],['PENDING_REVIEW','Chờ duyệt'],['CANCELLED','Đã hủy']].map(o=>`<option value="${o[0]}"${Q.st===o[0]?' selected':''}>${o[1]}</option>`).join('')}</select></label><button>Lọc</button></form>`+
+  return `<form class="f" onsubmit="event.preventDefault();Q.q=this.q.value;Q.st=this.st.value;render()"><label>Tìm kiếm<input name="q" value="${esc(Q.q==='—'?'':Q.q)}" placeholder="Mã phiên, thẻ, biển số"></label><label>Trạng thái<select name="st">${[['','Tất cả'],['ENTRY_PENDING','Chờ vào'],['ACTIVE','Đang gửi'],['PENDING_REVIEW','Chờ duyệt'],['EXIT_READY','Chờ thu phí'],['PAID_WAITING_EXIT','Chờ ACK ra'],['COMPLETED','Hoàn tất'],['CANCELLED','Đã hủy']].map(o=>`<option value="${o[0]}"${Q.st===o[0]?' selected':''}>${o[1]}</option>`).join('')}</select></label><button>Lọc</button></form>`+
   tbl(['Phiên','Mã thẻ','Giờ vào','Giờ ra','Biển vào','Biển ra','Thời lượng','Phí','Thanh toán','Trạng thái'],ss.map(s=>tr([esc(s.session_code),esc(s.card_uid),dt(s.entry_time),dt(s.exit_time),esc(s.entry_plate),esc(s.exit_plate),dur(s.entry_time,s.exit_time),vnd(s.fee_amount),s.is_paid?'<span class="b ok">Đã thanh toán</span>':'<span class="b warn">Chưa thanh toán</span>',bd(s.status)])))}
 
 async function pDevices(){const dv=await api('/devices?limit=100');
@@ -131,7 +146,7 @@ async function dataLive(){const sl=await api('/slots');
       if(a.length>40)a.shift();
     }
   }));
-  return tbl(['Ô đỗ','Trạng thái','Khoảng cách (cm)','Cập nhật','Biểu đồ'],sl.map(s=>tr([esc(s.id),bd(s.status),s.last_distance_cm??'—',dt(s.last_updated_at),spark(hist[s.id]||[])])))+'<p class="note">Biểu đồ được đồng bộ từ lịch sử đo telemetry của backend và cập nhật thời gian thực mỗi 5 giây.</p>'}
+  return tbl(['Ô đỗ','Trạng thái','Khoảng cách (cm)','Cập nhật','Biểu đồ','Kiểm tra thực tế'],sl.map(s=>tr([esc(s.id),bd(s.status),s.last_distance_cm??'—',dt(s.last_updated_at),spark(hist[s.id]||[]),`<button class="sm sec" onclick="C('slotStatus','${esc(s.id)}')">Cập nhật ô</button>`])))+'<p class="note">Chỉ cập nhật ô sau khi kiểm tra thực tế; thay đổi được ghi audit. Dữ liệu cảm biến làm mới mỗi 5 giây.</p>'}
 async function pMonitor(tab){
   if(tab==='alerts'){const al=await api('/alerts?limit=100');
     return tbl(['Thời gian','Loại sự cố','Mức độ','Nội dung','Thiết bị','Tình trạng','Xử lý'],al.map(a=>tr([dt(a.created_at),AT[a.alert_type],bd(a.severity),`<span style="white-space:normal">${esc(a.message)}</span>`,esc(a.device_id),bd(a.status),a.status==='RESOLVED'?'':(a.status==='NEW'?`<button class="sm sec" onclick="C('alert',${a.id},'ACKNOWLEDGED')">Tiếp nhận</button> `:'')+`<button class="sm" onclick="C('alert',${a.id},'RESOLVED')">Đã xử lý</button>`])))}
@@ -183,33 +198,44 @@ const mkAl=(id,t,sv,m,st)=>({id,alert_type:t,severity:sv,message:m,device_id:'ES
 const D={
   users:[[1,'admin','Quản trị viên Hệ thống','ADMIN'],[2,'operator','Nhân viên Trực bãi','OPERATOR'],[3,'viewer','Người xem Giám sát','VIEWER']].map(u=>({id:u[0],username:u[1],full_name:u[2],email:u[1]+'@ptit.edu.vn',role:u[3],is_active:true,created_at:ago(9e4)})),
   slots:[mkSlot('SLOT_A1','Ô đỗ Ô tô Số 1 (Làn chính)','OCCUPIED',11.2),mkSlot('SLOT_A2','Ô đỗ Ô tô Số 2','EMPTY',48),mkSlot('SLOT_A3','Ô đỗ Ô tô Số 3','MAINTENANCE',30)],
-  cards:[['A1B2C3D4','VISITOR','Khách vãng lai 01',null,true],['E5F6G7H8','MONTHLY','Nguyễn Văn Hưởng','30A-999.88',true],['F9E8D7C6','VISITOR','Khách vãng lai 02',null,false]].map(c=>({uid:c[0],card_type:c[1],owner_name:c[2],registered_plate:c[3],is_active:c[4],created_at:ago(9e4),updated_at:ago(9e4)})),
+  cards:[['A1B2C3D4','VISITOR','Khách vãng lai 01',null,true],['E5F6G7H8','MONTHLY','Nguyễn Văn Hưởng','30A-999.88',true],['F9E8D7C6','VISITOR','Khách vãng lai 02',null,false]].map(c=>({uid:c[0],card_type:c[1],owner_name:c[2],registered_plate:c[3],valid_from:c[1]==='MONTHLY'?new Date().toISOString().slice(0,10):null,valid_until:c[1]==='MONTHLY'?new Date(Date.now()+29*864e5).toISOString().slice(0,10):null,is_active:c[4],created_at:ago(9e4),updated_at:ago(9e4)})),
   sessions:[mkSes(1,'A1B2C3D4','ACTIVE',95,0,'30A-123.45',null,20000,false,'SLOT_A1'),mkSes(2,'E5F6G7H8','PENDING_REVIEW',40,0,'30A-999.88','30A-999.80',0,false,null),mkSes(3,'E5F6G7H8','COMPLETED',300,240,'30A-999.88','30A-999.88',0,true,null)],
   alerts:[mkAl(1,'UNAUTHORIZED_CARD','WARNING','Phát hiện quẹt thẻ đã bị khóa: UID F9E8D7C6 tại cổng ENTRY.','NEW'),mkAl(2,'PLATE_MISMATCH','WARNING','Xe ra biển số 30A-999.80 không khớp lúc vào 30A-999.88.','NEW'),mkAl(3,'DEVICE_OFFLINE','CRITICAL','Thiết bị ESP32_GATE_01 mất kết nối quá 25 giây.','RESOLVED')],
   devices:[{id:'ESP32_GATE_01',name:'Bộ điều khiển Cổng Vào/Ra & Ô đỗ A1',site_id:'PTIT_ZONE_1',auth_token:'dtk_demo',status:'ACTIVATED',is_online:true,ip_address:'192.168.137.50',fw_version:'1.0.0',hw_version:'ESP32-WROOM-32',last_heartbeat_at:ago(0.1),config:{version:1,distance_threshold_cm:15,servo_open_time_sec:10,heartbeat_interval_sec:10,buzzer_enabled:true}}],
   cmds:[{id:'cmd_demo1',device_id:'ESP32_GATE_01',gate_id:'GATE_IN',action:'OPEN',status:'ACKED',sent_by_user_id:2,ack_status:'SUCCESS',ack_reason:'Barrier opened (demo)',sent_at:ago(30),acked_at:ago(30)}],
   audit:[{id:1,user_id:1,action:'SYSTEM_INITIALIZE',resource_type:'DATABASE',resource_id:'smart_parking_db',details:'Khởi tạo CSDL và nạp dữ liệu mẫu',created_at:ago(9e4)},{id:2,user_id:2,action:'BARRIER_OPEN',resource_type:'devices',resource_id:'ESP32_GATE_01',details:'Phát lệnh OPEN cho cổng GATE_IN',created_at:ago(30)}]
 };
+const bySlot=id=>D.slots.find(s=>s.id===id);
+function mockGate(x,gate){
+  const c={id:'cmd_demo'+(++seq),device_id:'ESP32_GATE_01',session_id:x.id,gate_id:gate,action:'OPEN',status:'SENT',sent_by_user_id:S.user_id,ack_status:null,ack_reason:null,sent_at:ago(0),acked_at:null};
+  D.cmds.unshift(c);
+  setTimeout(()=>{Object.assign(c,{status:'ACKED',ack_status:'SUCCESS',ack_reason:'DEMO barrier opened',acked_at:ago(0)});
+    if(gate==='GATE_IN'){x.status='ACTIVE';x.entry_time=ago(0)}else{x.status='COMPLETED';x.exit_time=ago(0)}},1500);
+}
 async function mock(p,o){
   await new Promise(r=>setTimeout(r,100));
   const m=o.method||'GET',[path,qs]=p.split('?'),q=new URLSearchParams(qs||''),b=o.body||{},[r,id,sub]=path.split('/').filter(Boolean);
   const by=(a,k,v)=>a.find(x=>String(x[k])===String(v));
   const need=x=>{if(!x)throw new Error('Không tìm thấy bản ghi.');return x};
   const lim=a=>a.slice(0,Number(q.get('limit')||50));
-  if(r==='auth')return need(by(D.users,'username',S.username));
+  if(r==='auth'){const u=need(by(D.users,'username',S.username));if(m==='PATCH'){if(b.email&&D.users.some(x=>x.id!==u.id&&x.email?.toLowerCase()===b.email.toLowerCase()))throw new Error('Email đã được sử dụng.');Object.assign(u,{full_name:b.full_name,email:b.email});}return u}
   if(r==='users'){
     if(m==='POST'){if(by(D.users,'username',b.username))throw new Error('Tên đăng nhập đã tồn tại.');const u={...b,password:undefined,id:++seq,is_active:true,created_at:ago(0)};D.users.push(u);return u}
     if(sub)return Object.assign(need(by(D.users,'id',id)),{is_active:b.is_active});
     return lim(D.users)}
-  if(r==='slots'){D.slots.forEach(x=>{if(x.status!=='MAINTENANCE'){x.last_distance_cm=+(x.status==='OCCUPIED'?8+Math.random()*6:35+Math.random()*20).toFixed(1);x.last_updated_at=ago(0)}});return D.slots}
+  if(r==='slots'){if(sub==='status'&&m==='PATCH'){if(!b.reason?.trim())throw new Error('Cần ghi lý do kiểm tra.');const x=need(by(D.slots,'id',id));if(D.sessions.some(s=>s.slot_id===id&&['ENTRY_PENDING','ACTIVE','EXIT_READY','PENDING_REVIEW','PAID_WAITING_EXIT'].includes(s.status))&&b.status!=='OCCUPIED')throw new Error('Ô còn phiên đang xử lý.');x.status=b.status;return x}D.slots.forEach(x=>{if(x.status!=='MAINTENANCE'){x.last_distance_cm=+(x.status==='OCCUPIED'?8+Math.random()*6:35+Math.random()*20).toFixed(1);x.last_updated_at=ago(0)}});return D.slots}
   if(r==='cards'){
     if(m==='POST'){if(by(D.cards,'uid',b.uid))throw new Error('Mã UID thẻ đã tồn tại.');const c={...b,is_active:true,created_at:ago(0),updated_at:ago(0)};D.cards.unshift(c);return c}
     if(sub)return Object.assign(need(by(D.cards,'uid',id)),{is_active:b.is_active});
     return lim(D.cards)}
   if(r==='sessions'){
-    if(m==='POST'&&!id){const c=need(by(D.cards,'uid',b.card_uid));if(!c.is_active)throw new Error('Thẻ đang bị khóa hoặc báo mất.');if(D.sessions.some(x=>x.card_uid===c.uid&&['ACTIVE','PENDING_REVIEW'].includes(x.status)))throw new Error('Thẻ đang nằm trong phiên gửi xe chưa kết thúc.');const sl=by(D.slots,'id',b.slot_id);if(sl)sl.status='OCCUPIED';const x=mkSes(++seq,c.uid,'ACTIVE',0,0,b.entry_plate,null,c.card_type==='MONTHLY'?0:20000,false,b.slot_id);D.sessions.unshift(x);return x}
-    if(sub==='checkout'){const x=need(by(D.sessions,'id',id));if(x.status==='PENDING_REVIEW')throw new Error('Phiên đang chờ duyệt ngoại lệ.');if(x.is_paid)throw new Error('Phiên đã được thanh toán.');Object.assign(x,{is_paid:true,status:'COMPLETED',exit_time:ago(0)});const sl=by(D.slots,'id',x.slot_id);if(sl)sl.status='EMPTY';return x}
-    if(sub==='resolve-plate')return Object.assign(need(by(D.sessions,'id',id)),{status:b.approved?'ACTIVE':'CANCELLED',review_reason:b.note,reviewed_by:S.user_id});
+    if(m==='POST'&&!id){const c=need(by(D.cards,'uid',b.card_uid));if(!c.is_active)throw new Error('Thẻ đang bị khóa hoặc báo mất.');if(D.sessions.some(x=>x.card_uid===c.uid&&['ENTRY_PENDING','ACTIVE','EXIT_READY','PENDING_REVIEW','PAID_WAITING_EXIT'].includes(x.status)))throw new Error('Thẻ đang có phiên chưa kết thúc.');const sl=D.slots.find(s=>s.status==='EMPTY');if(!sl)throw new Error('Bãi đã hết ô trống.');sl.status='RESERVED';const today=new Date().toISOString().slice(0,10),free=c.card_type==='MONTHLY'&&c.valid_from<=today&&today<=c.valid_until;const x=mkSes(++seq,c.uid,'ENTRY_PENDING',0,0,b.entry_plate,null,free?0:20000,false,sl.id);x.entry_time=null;x.device_id=b.device_id;D.sessions.unshift(x);const norm=p=>(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(norm(b.entry_plate)&&(c.card_type!=='MONTHLY'||norm(c.registered_plate)===norm(b.entry_plate)))mockGate(x,'GATE_IN');return x}
+    if(sub==='entry-plate'){const x=need(by(D.sessions,'id',id));const c=need(by(D.cards,'uid',x.card_uid));const norm=p=>(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(c.card_type==='MONTHLY'&&norm(c.registered_plate)!==norm(b.plate))throw new Error('Biển khác biển đăng ký thẻ tháng.');x.entry_plate=b.plate;if(!D.cmds.some(c=>c.session_id===x.id&&c.gate_id==='GATE_IN'&&c.status==='SENT'))mockGate(x,'GATE_IN');return x}
+    if(sub==='prepare-exit'){const x=need(by(D.sessions,'id',id));x.exit_plate=b.exit_plate;x.status=x.entry_plate&&b.exit_plate&&x.entry_plate.replace(/[^A-Z0-9]/gi,'').toUpperCase()===b.exit_plate.replace(/[^A-Z0-9]/gi,'').toUpperCase()?'EXIT_READY':'PENDING_REVIEW';if(x.status==='EXIT_READY'&&x.fee_amount===0){x.is_paid=true;x.status='PAID_WAITING_EXIT';mockGate(x,'GATE_OUT')}return x}
+    if(sub==='checkout'){const x=need(by(D.sessions,'id',id));if(x.status!=='EXIT_READY')throw new Error('Phiên chưa sẵn sàng thu phí.');x.is_paid=true;x.status='PAID_WAITING_EXIT';mockGate(x,'GATE_OUT');return x}
+    if(sub==='retry-gate'){const x=need(by(D.sessions,'id',id));mockGate(x,x.status==='ENTRY_PENDING'?'GATE_IN':'GATE_OUT');return x}
+    if(sub==='cancel-entry'){const x=need(by(D.sessions,'id',id));if(x.status!=='ENTRY_PENDING')throw new Error('Chỉ hủy lượt vào đang chờ.');if(D.cmds.some(c=>c.session_id===x.id&&c.gate_id==='GATE_IN'&&c.status==='SENT'))throw new Error('Chờ lệnh cổng kết thúc trước khi hủy.');const sl=bySlot(x.slot_id);if(sl?.status==='OCCUPIED'&&!b.confirmed_departure)throw new Error('Cần xác nhận xe đã rời.');x.status='CANCELLED';if(sl?.status==='RESERVED')sl.status='EMPTY';return x}
+    if(sub==='resolve-plate'){const x=need(by(D.sessions,'id',id));if(b.approved&&!b.actual_exit_plate?.trim())throw new Error('Cần nhập biển ra xác nhận.');x.status=b.approved?'EXIT_READY':'PENDING_REVIEW';x.review_reason=b.note;x.reviewed_by=S.user_id;if(b.approved){x.exit_plate=b.actual_exit_plate;if(x.fee_amount===0){x.is_paid=true;x.status='PAID_WAITING_EXIT';mockGate(x,'GATE_OUT')}}return x}
     let a=D.sessions;const st=q.get('status'),se=(q.get('search')||'').toLowerCase();
     if(st)a=a.filter(x=>x.status===st);
     if(se)a=a.filter(x=>[x.session_code,x.card_uid,x.entry_plate,x.exit_plate].some(v=>(v||'').toLowerCase().includes(se)));

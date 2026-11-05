@@ -7,9 +7,24 @@ from app.models.enums import SessionStatus, PaymentMethod
 class SessionCreate(BaseModel):
     """Schema tạo phiên gửi xe mới (sử dụng khi xe vào hoặc test)."""
     card_uid: str = Field(..., min_length=4, max_length=50, description="Mã UID thẻ RFID quẹt tại barrier vào", examples=["A1B2C3D4"])
-    slot_id: Optional[str] = Field(None, max_length=20, description="Mã ô đỗ được gán (nếu có)", examples=["SLOT_A1"])
-    entry_plate: Optional[str] = Field(None, max_length=20, description="Biển số xe nhận diện từ camera ALPR", examples=["30A-999.88"])
+    device_id: str = Field(..., min_length=3, max_length=50)
+    entry_plate: Optional[str] = Field(None, max_length=20)
     entry_image_url: Optional[str] = Field(None, max_length=255, description="Đường dẫn ảnh chụp lúc xe vào", examples=["/images/in_20261016_01.jpg"])
+
+
+class EntryPlateConfirm(BaseModel):
+    plate: str = Field(..., min_length=4, max_length=20)
+    note: str = Field(..., min_length=1, max_length=255)
+
+
+class ExitPrepare(BaseModel):
+    exit_plate: Optional[str] = Field(None, max_length=20)
+    exit_image_url: Optional[str] = Field(None, max_length=255)
+
+
+class EntryCancel(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=255)
+    confirmed_departure: bool = False
 
 
 class SessionResolvePlate(BaseModel):
@@ -28,8 +43,6 @@ class SessionCancel(BaseModel):
 class SessionCheckout(BaseModel):
     """Schema thanh toán phí gửi xe và kết thúc phiên."""
     payment_method: PaymentMethod = Field(default=PaymentMethod.CASH, description="Phương thức thanh toán (CASH, SIMULATED_MOMO)")
-    exit_plate: Optional[str] = Field(None, max_length=20, description="Biển số xe nhận diện từ camera ALPR làn ra", examples=["30A-999.88"])
-    exit_image_url: Optional[str] = Field(None, max_length=255, description="Đường dẫn ảnh chụp lúc xe ra", examples=["/images/out_20261016_01.jpg"])
 
 
 class SessionOut(BaseModel):
@@ -40,7 +53,8 @@ class SessionOut(BaseModel):
     slot_id: Optional[str] = None
     tariff_id: int
     status: SessionStatus
-    entry_time: datetime
+    device_id: Optional[str] = None
+    entry_time: Optional[datetime] = None
     entry_plate: Optional[str] = None
     entry_image_url: Optional[str] = None
     exit_time: Optional[datetime] = None
