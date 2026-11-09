@@ -115,6 +115,13 @@ def update_slot_status(
     db.commit()
     db.refresh(slot)
 
+    if old_status != slot.status:
+        from app.services.websocket_manager import websocket_manager
+        websocket_manager.broadcast_sync("SLOT_STATUS_CHANGED", {
+            "slot_id": slot.id, "status": slot.status.value,
+            "last_distance_cm": float(slot.last_distance_cm) if slot.last_distance_cm is not None else None,
+        })
+
     return slot
 
 

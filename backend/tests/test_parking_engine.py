@@ -15,13 +15,15 @@ from app.models.tariff import Tariff
 from app.models.command import Command
 from app.models.device import Device
 from app.models.enums import (
-    CommandStatus, DeviceStatus, GateId, PaymentMethod, SessionStatus, SlotStatus,
+    AlertType, CommandStatus, DeviceStatus, GateId, PaymentMethod, SessionStatus, SlotStatus,
 )
 from app.models.payment import Payment
 from app.models.slot import Slot
+from app.models.telemetry import TelemetryLog
 from app.services.command_service import command_service
 from app.services.iot_listener import iot_listener
 from app.services.mqtt_service import mqtt_service
+from app.services.websocket_manager import websocket_manager
 from app.services.parking_flow import (
     approve_exit, cancel_entry, checkout, confirm_entry_plate, create_entry,
     prepare_exit, retry_gate,
@@ -52,7 +54,10 @@ def ack(db, session_id, gate, success=True):
     return command
 
 
-def test_visitor_full_flow(db):
+def test_visitor_full_flow(db, monkeypatch):
+    events = []
+    monkeypatch.setattr(websocket_manager, "broadcast_sync",
+                        lambda event, data: events.append((event, data)))
     obj = create_entry(db, "ESP32_GATE_01", "A1B2C3D4", "30A-123.45")
     assert obj.status == SessionStatus.ENTRY_PENDING
     assert obj.entry_time is None
@@ -61,6 +66,8 @@ def test_visitor_full_flow(db):
     ack(db, obj.id, GateId.GATE_IN)
     assert obj.status == SessionStatus.ACTIVE
     assert obj.entry_time is not None
+    assert any(event == "CAR_ENTERED" and data["session_id"] == obj.id
+               for event, data in events)
     prepare_exit(db, obj.id, "30A12345")
     assert obj.status == SessionStatus.EXIT_READY
     user = SimpleNamespace(id=2, username="operator", role=SimpleNamespace(value="OPERATOR"))
@@ -70,6 +77,10 @@ def test_visitor_full_flow(db):
     ack(db, obj.id, GateId.GATE_OUT)
     assert obj.status == SessionStatus.COMPLETED
     assert obj.exit_time is not None
+    assert any(event == "CAR_EXITED" and data["session_id"] == obj.id
+               for event, data in events)
+    assert any(event == "BARRIER_STATUS" and data["status"] == "ACKED"
+               for event, data in events)
     assert db.query(Payment).filter_by(session_id=obj.id).count() == 1
     assert db.query(Slot).filter_by(id=obj.slot_id).one().status == SlotStatus.RESERVED
 
@@ -194,12 +205,19 @@ def test_publish_failure_and_retry_do_not_charge_twice(db, monkeypatch):
     assert db.query(Payment).filter_by(session_id=obj.id).count() == 1
 
 
-def test_exit_mismatch_requires_review_without_second_swipe(db):
+def test_exit_mismatch_requires_review_without_second_swipe(db, monkeypatch):
+    events = []
+    monkeypatch.setattr(websocket_manager, "broadcast_sync",
+                        lambda event, data: events.append((event, data)))
     obj = create_entry(db, "ESP32_GATE_01", "A1B2C3D4", "30A12345")
     ack(db, obj.id, GateId.GATE_IN)
     prepare_exit(db, obj.id, "29B99999")
     assert obj.status == SessionStatus.PENDING_REVIEW
     assert obj.exit_time is None
+    alert = db.query(Alert).filter_by(session_id=obj.id, alert_type=AlertType.PLATE_MISMATCH).one()
+    assert alert.status.value == "NEW"
+    assert any(event == "NEW_ALERT" and data["alert_id"] == alert.id
+               for event, data in events)
     user = SimpleNamespace(id=2, username="operator", role=SimpleNamespace(value="OPERATOR"))
     with pytest.raises(HTTPException) as error:
         approve_exit(db, obj.id, True, "Checked photo", None, user)
@@ -207,6 +225,46 @@ def test_exit_mismatch_requires_review_without_second_swipe(db):
     approve_exit(db, obj.id, True, "Checked photo", "30A12345", user)
     assert obj.status == SessionStatus.EXIT_READY
     assert obj.exit_plate == "30A12345"
+    assert alert.status.value == "RESOLVED"
+
+
+def test_unknown_rfid_broadcasts_alert_once(db, monkeypatch):
+    events = []
+    monkeypatch.setattr(websocket_manager, "broadcast_sync",
+                        lambda event, data: events.append((event, data)))
+    device = db.query(Device).filter_by(id="ESP32_GATE_01").one()
+    topic = "parking/PTIT_ZONE_1/ESP32_GATE_01/events/rfid"
+    payload = {"token": device.auth_token, "cardUid": "UNKNOWN_DEMO_CARD", "gate": "GATE_IN"}
+    iot_listener.handle_rfid(topic, payload)
+    iot_listener.handle_rfid(topic, payload)
+    db.rollback()
+    assert db.query(Alert).filter_by(alert_type=AlertType.UNAUTHORIZED_CARD).count() == 1
+    assert sum(event == "NEW_ALERT" for event, _ in events) == 1
+
+
+def test_telemetry_keeps_occupied_slot_on_stale_or_invalid_sample(db, monkeypatch):
+    events = []
+    monkeypatch.setattr(websocket_manager, "broadcast_sync",
+                        lambda event, data: events.append((event, data)))
+    obj = create_entry(db, "ESP32_GATE_01", "A1B2C3D4", "30A12345")
+    ack(db, obj.id, GateId.GATE_IN)
+    device = db.query(Device).filter_by(id="ESP32_GATE_01").one()
+    topic = "parking/PTIT_ZONE_1/ESP32_GATE_01/telemetry"
+    base = {"token": device.auth_token, "slotId": obj.slot_id}
+    now = datetime.now()
+    iot_listener.handle_telemetry(topic, {**base, "distanceCm": 8,
+                                          "sampledAt": now.isoformat()})
+    db.rollback()
+    assert db.query(Slot).filter_by(id=obj.slot_id).one().status == SlotStatus.OCCUPIED
+    assert any(event == "SLOT_STATUS_CHANGED" and data["status"] == "OCCUPIED"
+               for event, data in events)
+    count = db.query(TelemetryLog).filter_by(slot_id=obj.slot_id).count()
+    iot_listener.handle_telemetry(topic, {**base, "distanceCm": 150,
+                                          "sampledAt": (now - timedelta(minutes=2)).isoformat()})
+    iot_listener.handle_telemetry(topic, {**base, "distanceCm": 0})
+    db.rollback()
+    assert db.query(Slot).filter_by(id=obj.slot_id).one().status == SlotStatus.OCCUPIED
+    assert db.query(TelemetryLog).filter_by(slot_id=obj.slot_id).count() == count
 
 
 def test_cancel_occupied_requires_confirmation_and_stays_occupied(db):

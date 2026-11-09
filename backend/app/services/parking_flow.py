@@ -7,11 +7,12 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditLog
+from app.models.alert import Alert
 from app.models.card import Card
 from app.models.command import Command
 from app.models.device import Device
 from app.models.enums import (
-    CardType, CommandAction, CommandStatus, DeviceStatus, GateId,
+    AlertSeverity, AlertStatus, AlertType, CardType, CommandAction, CommandStatus, DeviceStatus, GateId,
     PaymentMethod, PaymentStatus, SessionStatus, SlotStatus,
 )
 from app.models.payment import Payment
@@ -20,6 +21,7 @@ from app.models.slot import Slot
 from app.models.tariff import Tariff
 from app.schemas.command_schema import CommandSend
 from app.services.command_service import command_service
+from app.services.websocket_manager import websocket_manager
 
 logger = logging.getLogger(__name__)
 OPEN_STATES = (
@@ -42,6 +44,12 @@ def _session(db: Session, session_id: int) -> ParkingSession:
 def _audit(db: Session, action: str, obj: ParkingSession, user=None, details: str = "") -> None:
     db.add(AuditLog(user_id=user.id if user else None, action=action,
                     resource_type="parking_sessions", resource_id=str(obj.id), details=details))
+
+
+def broadcast_session(obj: ParkingSession) -> None:
+    websocket_manager.broadcast_sync("SESSION_STATUS_CHANGED", {
+        "session_id": obj.id, "status": obj.status.value, "slot_id": obj.slot_id,
+    })
 
 
 def _send_gate(db: Session, obj: ParkingSession, gate: GateId, user=None) -> None:
@@ -110,6 +118,8 @@ def create_entry(db: Session, device_id: str, card_uid: str, plate: str | None,
     if normalized and not (card.card_type == CardType.MONTHLY
                            and normalize_plate(card.registered_plate) != normalized):
         confirm_entry_plate(db, obj.id, plate, user=user, note="OCR" if not user else "Nhập tại cổng")
+    else:
+        broadcast_session(obj)
     return obj
 
 
@@ -134,6 +144,7 @@ def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
     if not pending:
         _send_gate(db, obj, GateId.GATE_IN, user)
     db.refresh(obj)
+    broadcast_session(obj)
     return obj
 
 
@@ -147,9 +158,24 @@ def prepare_exit(db: Session, session_id: int, plate: str | None,
     obj.status = (SessionStatus.EXIT_READY if normalize_plate(obj.entry_plate)
                   and normalize_plate(obj.entry_plate) == normalize_plate(obj.exit_plate)
                   else SessionStatus.PENDING_REVIEW)
+    alert = None
+    if obj.status == SessionStatus.PENDING_REVIEW:
+        alert = Alert(
+            alert_type=AlertType.PLATE_MISMATCH,
+            severity=AlertSeverity.WARNING,
+            message=(f"Phiên {obj.session_code}: biển vào {obj.entry_plate or 'chưa có'}, "
+                     f"biển ra {obj.exit_plate or 'không đọc được'}; cần nhân viên đối chiếu."),
+            device_id=obj.device_id, session_id=obj.id, status=AlertStatus.NEW,
+        )
+        db.add(alert)
     _audit(db, "EXIT_PLATE_CHECKED", obj, user, f"Kết quả: {obj.status.value}")
     db.commit()
     db.refresh(obj)
+    broadcast_session(obj)
+    if alert:
+        websocket_manager.broadcast_sync("NEW_ALERT", {
+            "alert_id": alert.id, "message": alert.message, "severity": alert.severity.value,
+        })
     if obj.status == SessionStatus.EXIT_READY and float(obj.fee_amount) == 0:
         return checkout(db, obj.id, PaymentMethod.SYSTEM, user=None)
     return obj
@@ -165,12 +191,21 @@ def approve_exit(db: Session, session_id: int, approved: bool, note: str,
             raise HTTPException(400, "Cần nhập biển ra nhân viên đã xác nhận.")
         obj.exit_plate = corrected_plate.strip().upper()
         obj.status = SessionStatus.EXIT_READY
+        for alert in db.query(Alert).filter(
+            Alert.session_id == obj.id,
+            Alert.alert_type == AlertType.PLATE_MISMATCH,
+            Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+        ).all():
+            alert.status = AlertStatus.RESOLVED
+            alert.resolved_by = user.id
+            alert.resolved_at = datetime.now()
     obj.reviewed_by = user.id
     obj.review_reason = note if approved else f"[REJECTED] {note}"
     _audit(db, "EXIT_REVIEW_APPROVED" if approved else "EXIT_REVIEW_REJECTED",
            obj, user, f"{obj.review_reason}; biển xác nhận: {obj.exit_plate or 'trống'}")
     db.commit()
     db.refresh(obj)
+    broadcast_session(obj)
     if approved and float(obj.fee_amount) == 0:
         return checkout(db, obj.id, PaymentMethod.SYSTEM, user=None)
     return obj
@@ -194,6 +229,7 @@ def checkout(db: Session, session_id: int, method: PaymentMethod, user=None) -> 
     db.commit()
     _send_gate(db, obj, GateId.GATE_OUT, user)
     db.refresh(obj)
+    broadcast_session(obj)
     return obj
 
 
@@ -237,10 +273,11 @@ def cancel_entry(db: Session, session_id: int, reason: str, user,
            f"{reason}; xác nhận xe đã rời: {'có' if confirmed_departure else 'không'}")
     db.commit()
     db.refresh(obj)
+    broadcast_session(obj)
     return obj
 
 
-def on_gate_ack(db: Session, command: Command) -> None:
+def on_gate_ack(db: Session, command: Command) -> ParkingSession | None:
     """Called before ACK transaction commits, only for a newly ACKED command."""
     if not command.session_id or command.action != CommandAction.OPEN:
         return
@@ -254,3 +291,4 @@ def on_gate_ack(db: Session, command: Command) -> None:
     else:
         return
     _audit(db, "GATE_ACK_COMPLETED", obj, details=command.id)
+    return obj

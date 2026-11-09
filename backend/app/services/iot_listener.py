@@ -285,6 +285,9 @@ class IoTListener:
         if not math.isfinite(distance_cm) or distance_cm < 0.0 or distance_cm > 1000.0:
             logger.warning(f"[IoT Listener] Khoảng cách cảm biến nằm ngoài phạm vi vật lý hợp lệ (0-1000cm): {distance_cm} cm.")
             return
+        if distance_cm <= 2.0:
+            logger.warning("[IoT Listener] Bỏ qua số đo cảm biến không đáng tin cậy: %s cm", distance_cm)
+            return
 
         db: Session = SessionLocal()
         try:
@@ -329,6 +332,8 @@ class IoTListener:
             if sampled_at_str:
                 try:
                     sampled_at = datetime.fromisoformat(str(sampled_at_str).replace("Z", "+00:00"))
+                    if sampled_at.tzinfo is not None:
+                        sampled_at = sampled_at.astimezone().replace(tzinfo=None)
                 except Exception:
                     pass
 
@@ -354,6 +359,13 @@ class IoTListener:
                 db.commit()
                 logger.warning(f"[IoT Listener] {alert_msg}")
                 return
+
+            latest = (db.query(TelemetryLog).filter(TelemetryLog.slot_id == slot.id)
+                      .order_by(TelemetryLog.id.desc()).first())
+            if sampled_at_str and latest and sampled_at < latest.sampled_at:
+                logger.info("[IoT Listener] Bỏ qua telemetry cũ cho ô '%s'", slot.id)
+                return
+            previous_status = slot.status
 
             # 1. Ghi log Telemetry vào bảng telemetry_logs
             telemetry_entry = TelemetryLog(
@@ -448,14 +460,6 @@ class IoTListener:
                     if slot.status != new_status:
                         logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
                         slot.status = new_status
-                        websocket_manager.broadcast_sync(
-                            "SLOT_STATUS_CHANGED",
-                            {
-                                "slot_id": slot.id,
-                                "status": new_status.value,
-                                "last_distance_cm": distance_cm,
-                            },
-                        )
 
             # Cập nhật mốc nhận tín hiệu của thiết bị
             device.last_heartbeat_at = func.now()
@@ -472,6 +476,11 @@ class IoTListener:
                 device.is_online = False
 
             db.commit()
+            if slot.status != previous_status:
+                websocket_manager.broadcast_sync("SLOT_STATUS_CHANGED", {
+                    "slot_id": slot.id, "status": slot.status.value,
+                    "last_distance_cm": distance_cm,
+                })
             logger.debug(f"[IoT Listener] Đã lưu telemetry cho ô '{slot_id}': {distance_cm}cm (occupied={is_occupied})")
         except Exception as e:
             db.rollback()
@@ -559,6 +568,10 @@ class IoTListener:
                     )
                     db.add(alert)
                     db.commit()
+                    websocket_manager.broadcast_sync("NEW_ALERT", {
+                        "alert_id": alert.id, "message": alert.message,
+                        "severity": alert.severity.value,
+                    })
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' không tồn tại trong hệ thống!")
                 return
 
@@ -584,6 +597,10 @@ class IoTListener:
                     )
                     db.add(alert)
                     db.commit()
+                    websocket_manager.broadcast_sync("NEW_ALERT", {
+                        "alert_id": alert.id, "message": alert.message,
+                        "severity": alert.severity.value,
+                    })
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' đã bị khóa nhưng vẫn quẹt qua cổng!")
                 return
 

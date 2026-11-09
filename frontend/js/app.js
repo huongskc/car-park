@@ -29,12 +29,12 @@ async function protectedImage(path){
 function initWs(){
   if(!S||S.demo||wsClient)return;
   try{
-    const u=origin().replace(/^http/,'ws')+'/ws';
+    const u=origin().replace(/^http/,'ws')+'/ws?token='+encodeURIComponent(S.access_token);
     wsClient=new WebSocket(u);
     wsClient.onmessage=e=>{
       try{
         const m=JSON.parse(e.data);
-        if(m.event==='SLOT_STATUS_CHANGED'||m.event==='CAR_ENTERED'||m.event==='CAR_EXITED'||m.event==='BARRIER_STATUS'){
+        if(['SLOT_STATUS_CHANGED','SESSION_STATUS_CHANGED','CAR_ENTERED','CAR_EXITED','BARRIER_STATUS'].includes(m.event)){
           const pg=location.hash.slice(2).split('/')[0]||'dashboard';
           if(['dashboard','gate','parking'].includes(pg)){
             const l=$('#live');if(l&&PAGES[pg]?.live)PAGES[pg].live().then(h=>{const el=$('#live');if(el)el.innerHTML=h}).catch(()=>{});

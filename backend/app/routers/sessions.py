@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import require_role
 from app.database import get_db
 from app.models.audit import AuditLog
-from app.models.enums import SessionStatus, UserRole
+from app.models.alert import Alert
+from app.models.enums import AlertStatus, AlertType, SessionStatus, UserRole
 from app.models.session import ParkingSession
 from app.models.user import User
 from app.schemas.session_schema import (
@@ -111,10 +112,19 @@ def cancel_session(session_id: int, payload: SessionCancel,
     obj.exit_time = datetime.now()
     obj.reviewed_by = user.id
     obj.review_reason = payload.reason
+    for alert in db.query(Alert).filter(
+        Alert.session_id == obj.id,
+        Alert.alert_type == AlertType.PLATE_MISMATCH,
+        Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+    ).all():
+        alert.status = AlertStatus.RESOLVED
+        alert.resolved_by = user.id
+        alert.resolved_at = datetime.now()
     db.add(AuditLog(user_id=user.id, action="CANCEL_SESSION", resource_type="parking_sessions",
                     resource_id=str(obj.id), details=payload.reason))
     db.commit()
     db.refresh(obj)
+    parking_flow.broadcast_session(obj)
     return obj
 
 

@@ -14,6 +14,7 @@ from app.models.audit import AuditLog
 from app.models.user import User
 from app.schemas.command_schema import CommandSend
 from app.services.mqtt_service import mqtt_service
+from app.services.websocket_manager import websocket_manager
 
 logger = logging.getLogger("smart_parking.command_service")
 
@@ -155,6 +156,10 @@ class CommandService:
             new_command.ack_reason = publish_error
             db.commit()
             db.refresh(new_command)
+            websocket_manager.broadcast_sync("BARRIER_STATUS", {
+                "command_id": command_id, "session_id": session_id,
+                "gate": payload.gate_id.value, "status": CommandStatus.FAILED.value,
+            })
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -164,6 +169,10 @@ class CommandService:
                 },
             )
 
+        websocket_manager.broadcast_sync("BARRIER_STATUS", {
+            "command_id": command_id, "session_id": session_id,
+            "gate": payload.gate_id.value, "status": CommandStatus.SENT.value,
+        })
         return new_command
 
     def process_ack(self, payload: dict, db: Session, topic_device_id: Optional[str] = None) -> bool:
@@ -232,14 +241,29 @@ class CommandService:
             )
             return True
 
+        session_event = None
         if ack_status_raw == "SUCCESS":
             from app.services.parking_flow import on_gate_ack
-            on_gate_ack(db, command)
+            completed_session = on_gate_ack(db, command)
+            if completed_session:
+                session_event = {
+                    "session_id": completed_session.id,
+                    "status": completed_session.status.value,
+                    "slot_id": completed_session.slot_id,
+                }
             logger.info(f"[Command Service] Lệnh '{command_id}' đã được ESP32 thực thi thành công (ACKED)!")
         else:
             logger.warning(f"[Command Service] Lệnh '{command_id}' thất bại trên phần cứng: {reason_val}")
 
+        command_event = {
+            "command_id": command.id, "session_id": command.session_id,
+            "gate": command.gate_id.value, "status": new_status.value,
+        }
         db.commit()
+        websocket_manager.broadcast_sync("BARRIER_STATUS", command_event)
+        if session_event:
+            event = "CAR_ENTERED" if session_event["status"] == "ACTIVE" else "CAR_EXITED"
+            websocket_manager.broadcast_sync(event, session_event)
         return True
 
     def expire_stale_commands(self, timeout_seconds: int = 30, db: Optional[Session] = None) -> int:
