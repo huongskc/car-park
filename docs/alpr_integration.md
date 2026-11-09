@@ -19,8 +19,40 @@
    python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
    ```
 
-Backend vẫn cần MySQL và cấu hình MQTT hiện có. Không chạy `camera.py` đồng
-thời với AI API vì hai chương trình dùng chung camera.
+Backend vẫn cần MySQL và cấu hình MQTT hiện có. Không mở cùng một webcam
+đồng thời từ `camera.py`, API `/capture` và trình duyệt.
+
+## Camera trực tiếp ở trang Vận hành cổng
+
+- Mở frontend bằng `http://127.0.0.1:5500` hoặc HTTPS trong Chrome/Edge.
+- Cắm hai webcam, vào **Vận hành cổng**, chọn camera cho **làn vào** và
+  **làn ra**, rồi nhấn **Bật camera** và cho phép trình duyệt truy cập camera.
+- Nếu chỉ có một webcam, có thể dùng chung để thử; giao diện sẽ thông báo
+  hai làn đang dùng cùng một góc nhìn. Hai góc nhìn độc lập cần hai camera.
+- **Đọc biển số** gửi khung hình hiện tại của đúng làn đến backend. Có thể
+  bật **Tự đọc biển số**; hai làn được xử lý lần lượt, không chồng yêu cầu OCR.
+  Khi một yêu cầu thất bại, chế độ tự đọc của làn đó dừng để người vận hành
+  kiểm tra trước khi bật lại.
+- Mỗi làn có biển số, độ tin cậy, thời điểm chụp và ảnh cắt để đối chiếu.
+  **Dùng biển số cho lượt vào** chỉ điền ô nhập; nhân viên vẫn tự tạo lượt.
+  Nhận diện không tự mở chắn, tạo phiên hoặc thu phí.
+- Chế độ xem thử cho phép xem webcam thật nhưng không gọi nhận diện giả.
+  Nhận diện thật cần đăng nhập OPERATOR/ADMIN, backend và AI service hoạt động.
+- Rời trang hoặc đăng xuất sẽ tắt camera và hủy yêu cầu nhận diện đang chạy.
+  Việc cập nhật bảng lệnh/phiên định kỳ không làm khởi động lại video.
+
+### API ảnh từ camera trình duyệt
+
+`POST /api/v1/alpr/recognize`, Bearer JWT của OPERATOR/ADMIN, multipart form:
+
+- `lane`: `IN` hoặc `OUT`.
+- `image`: ảnh JPEG/PNG, tối đa 4 MB; AI từ chối ảnh trên 16 triệu điểm ảnh.
+- `session_id`: tùy chọn, tối đa 64 ký tự.
+
+Backend gửi ảnh tới `POST /recognize` của AI bằng khóa nội bộ. AI áp dụng
+`ROI_IN`/`ROI_OUT` trước khi tìm biển số, trả cùng hợp đồng kết quả và ảnh
+riêng tư như `/capture`. Luồng này không mở webcam trên máy AI; nguồn video
+là camera của máy đang mở trình duyệt. Không gửi API key hoặc JWT qua URL.
 
 ## Gọi API qua backend
 
@@ -54,8 +86,11 @@ Không tự retry capture để tránh chụp nhiều lần ngoài ý muốn.
 ## Kiểm tra hợp đồng tích hợp
 
 ```powershell
-python -m unittest discover -s tests -p test_alpr_integration.py -v
+.\backend\.venv\Scripts\python.exe -m unittest discover -s tests -p test_alpr_integration.py -v
+.\ai-service\.venv\Scripts\python.exe -m unittest discover -s tests -p test_ai_camera_upload.py -v
 ```
 
-Test dùng HTTP transport giả lập; không cần MySQL, broker, camera hoặc model.
-Kiểm tra thực tế qua Swagger `/docs` cần AI service và webcam hoạt động.
+Test dùng HTTP transport và OCR giả lập; không cần MySQL, broker, camera
+hoặc model. `tests/test_gate_cameras.cjs` kiểm tra giao diện bằng Playwright
+với hai nguồn video giả lập, gồm đổi/dùng chung camera, nhận diện, rời trang
+và màn hình di động. Kiểm tra webcam và OCR thật thực hiện trên trang Vận hành cổng.

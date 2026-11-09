@@ -31,8 +31,8 @@ class PlateDetector:
         self.path = path if path.is_absolute() else BASE / path
         if not self.path.is_file():
             raise FileNotFoundError(f'Khong tim thay model: {self.path}')
-        self.conf = float(conf if conf is not None else os.getenv('YOLO_CONF', '.2'))
-        self.imgsz = int(imgsz if imgsz is not None else os.getenv('YOLO_IMG_SIZE', '960'))
+        self.conf = float(conf if conf is not None else os.getenv('YOLO_CONF', '.15'))
+        self.imgsz = int(imgsz if imgsz is not None else os.getenv('YOLO_IMG_SIZE', '640'))
         if not 0 < self.conf <= 1 or self.imgsz < 32:
             raise ValueError('conf phai trong (0,1], imgsz >= 32')
         self.device = device
@@ -115,6 +115,20 @@ def rank_detections(detections, shape):
                 break
         if not duplicate:
             unique.append(detection)
+    if len(unique) >= 2:
+        for i in range(len(unique)):
+            for j in range(i + 1, len(unique)):
+                b1, b2 = unique[i]['bbox'], unique[j]['bbox']
+                if abs(b1[1] - b2[1]) < 45 and abs(b1[3] - b2[3]) < 45:
+                    merged_box = [min(b1[0], b2[0]), min(b1[1], b2[1]), max(b1[2], b2[2]), max(b1[3], b2[3])]
+                    mw = merged_box[2] - merged_box[0]
+                    mh = merged_box[3] - merged_box[1]
+                    if mw > 0 and mh > 0 and 1.2 <= mw / mh <= 8:
+                        merged_item = dict(unique[i])
+                        merged_item['bbox'] = merged_box
+                        merged_item['selection_score'] = max(unique[i]['selection_score'], unique[j]['selection_score']) + 0.05
+                        unique.insert(0, merged_item)
+                        break
     return unique
 
 
@@ -177,7 +191,7 @@ def recognize_frame(frame, boxes, recognize, fallback=None, pad=0.08):
         short_single_row = bool(re.fullmatch(r'[0-9]{2}[A-Z]{1,2}[0-9]{4}', result.get('plate_number') or ''))
         return valid and not short_single_row and not (len(lines) == 2 and len(lines[1]['text']) == 4)
 
-    for box in boxes[:3]:
+    for box in boxes[:5]:
         if len(box) != 4 or not all(math.isfinite(v) for v in box):
             continue
         x1, y1, x2, y2 = box

@@ -31,6 +31,8 @@ class ALPRService:
             raise HTTPException(404, "Ảnh không tồn tại.")
         if response.status_code == 503:
             raise HTTPException(503, "Camera hoặc AI service chưa sẵn sàng.")
+        if path == "recognize" and response.status_code in (400, 413, 415):
+            raise HTTPException(response.status_code, "Ảnh gửi lên không hợp lệ hoặc vượt giới hạn cho phép.")
         if response.status_code != 200:
             # Do not expose upstream errors, credentials or internal URLs.
             raise HTTPException(502, "AI service trả về lỗi hoặc xác thực không thành công.")
@@ -41,6 +43,19 @@ class ALPRService:
         response = await self._request(
             "POST", "capture", json={**payload.model_dump(), "request_id": request_id}
         )
+        return self._result(response, payload, request_id)
+
+    async def recognize(self, payload: CaptureRequest, content: bytes, content_type: str) -> CaptureResult:
+        request_id = uuid4().hex
+        response = await self._request(
+            "POST", "recognize",
+            data={**payload.model_dump(exclude_none=True), "request_id": request_id},
+            files={"image": ("frame.jpg" if content_type == "image/jpeg" else "frame.png", content, content_type)},
+        )
+        return self._result(response, payload, request_id)
+
+    @staticmethod
+    def _result(response: httpx.Response, payload: CaptureRequest, request_id: str) -> CaptureResult:
         try:
             result = CaptureResult.model_validate(response.json())
             if (result.request_id != request_id or result.lane != payload.lane
