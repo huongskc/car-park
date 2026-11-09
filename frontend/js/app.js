@@ -56,7 +56,7 @@ async function api(p,o={}){
   if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Dữ liệu gửi lên không hợp lệ.');
   return d;
 }
-function logout(){if(wsClient){try{wsClient.close()}catch(_){}wsClient=null}for(const u of imageCache.values())URL.revokeObjectURL(u);imageCache.clear();S=null;localStorage.removeItem('sess');render()}
+function logout(){if(window.GateCameras)GateCameras.unmount();if(wsClient){try{wsClient.close()}catch(_){}wsClient=null}for(const u of imageCache.values())URL.revokeObjectURL(u);imageCache.clear();S=null;localStorage.removeItem('sess');render()}
 async function doLogin(ev){ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));
   S=null;
   try{S=await api('/auth/login',{method:'POST',body:{username:d.username,password:d.password}});localStorage.setItem('sess',JSON.stringify(S));location.hash='#/dashboard';render()}
@@ -102,7 +102,8 @@ async function dashLive(){const op=OP();
   <h3>Cảnh báo mới</h3>${tbl(['Thời gian','Loại','Mức độ','Nội dung'],al.map(a=>tr([dt(a.created_at),AT[a.alert_type],bd(a.severity),`<span style="white-space:normal">${esc(a.message)}</span>`])))}`:'<p class="note">Tài khoản Người xem chỉ xem được sơ đồ ô đỗ.</p>')}
 
 async function pGate(){const dv=await api('/devices');
-  return `<form class="f" onsubmit="F(event,'enter')"><label>Thiết bị điều khiển<select id="dev" onchange="gateRefresh()">${dv.map(d=>`<option>${esc(d.id)}</option>`).join('')}</select></label><label>Mã thẻ<input name="card_uid" required minlength="4"></label><label>Biển số đã nhìn thấy (có thể để trống)<input name="entry_plate"></label><button class="go">Cấp ô và xử lý lượt vào</button></form><div id="live"></div>`}
+  const cams=window.GateCameras?`<div class="two camera-row" style="margin-bottom:16px">${GateCameras.view('IN')}${GateCameras.view('OUT')}</div><p id="gate-camera-shared" class="note" hidden>Hai cổng đang dùng chung một webcam vật lý.</p>`:'';
+  return `${cams}<form class="f" onsubmit="F(event,'enter')"><label>Thiết bị điều khiển<select id="dev" onchange="gateRefresh()">${dv.map(d=>`<option>${esc(d.id)}</option>`).join('')}</select></label><label>Mã thẻ<input name="card_uid" required minlength="4"></label><label>Biển số đã nhìn thấy (có thể để trống)<input name="entry_plate" id="gate-entry-plate"></label><button class="go">Cấp ô và xử lý lượt vào</button></form><div id="live"></div>`}
 const gateRefresh=async()=>{const l=$('#live');if(l)try{l.innerHTML=await gateLive()}catch(x){l.innerHTML=`<div class="err">${esc(x.message)}</div>`}};
 async function gateLive(){const id=$('#dev')?.value;
   const[cm,se,slots]=await Promise.all([id?api(`/devices/${id}/commands?limit=20`):[],api('/sessions?limit=30'),api('/slots')]);
@@ -173,7 +174,7 @@ function demo(role){S={access_token:'demo',demo:true,role,username:role.toLowerC
 async function render(){
   clearInterval(timer);
   const myEpoch=++renderEpoch;
-  if(!S){$('#app').innerHTML=loginView();return}
+  if(!S){if(window.GateCameras)GateCameras.unmount();$('#app').innerHTML=loginView();return}
   if(!S.demo)initWs();
   const[pg='dashboard',t0]=location.hash.slice(2).split('/');const P=PAGES[pg];
   if(!P||LV[S.role]<LV[P.lv]){location.hash='#/dashboard';if(pg!=='dashboard')return}
@@ -186,9 +187,24 @@ async function render(){
     const content=await cur.r(tab);
     if(myEpoch!==renderEpoch)return;
     m.innerHTML=tabs+content;
+    if(window.GateCameras){
+      if(key==='gate'){
+        GateCameras.mount({
+          apiBase: API,
+          session: S,
+          onUnauthorized: ()=>logout(),
+          onUsePlate: plate=>{
+            const inp=$('#gate-entry-plate')||$('input[name="entry_plate"]');
+            if(inp){inp.value=plate;toast('Đã gán biển số '+plate+' cho lượt vào')}
+          }
+        });
+      }else{
+        GateCameras.unmount();
+      }
+    }
     const live=cur.live||(key==='monitor'&&tab==='data'?dataLive:null);
     if(live){const f=async()=>{if(myEpoch!==renderEpoch)return;const l=$('#live');if(!l)return;try{const html=await live(tab);if(myEpoch!==renderEpoch)return;l.innerHTML=html}catch(x){if(myEpoch!==renderEpoch)return;l.innerHTML=`<div class="err">${esc(x.message)}</div>`}};f();timer=setInterval(f,cur.every||5000)}
-  }catch(x){if(myEpoch===renderEpoch)m.innerHTML=`<div class="err">${esc(x.message==='Failed to fetch'?'Không kết nối được backend tại '+API+'. Kiểm tra backend đang chạy (uvicorn) và địa chỉ API.':x.message)}</div>`}
+  }catch(x){if(window.GateCameras&&key!=='gate')GateCameras.unmount();if(myEpoch===renderEpoch)m.innerHTML=`<div class="err">${esc(x.message==='Failed to fetch'?'Không kết nối được backend tại '+API+'. Kiểm tra backend đang chạy (uvicorn) và địa chỉ API.':x.message)}</div>`}
 }
 /* ---------- Chế độ xem thử: dữ liệu mẫu trong trình duyệt ---------- */
 const ago=m=>new Date(Date.now()-m*6e4).toISOString();let seq=100;
