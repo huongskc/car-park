@@ -411,15 +411,16 @@ def _recognize_specialist(image, profile):
             'observations':[]})
     votes={}
     for candidate in candidates:
-        if candidate['valid_format'] and candidate['min_character_confidence']>=.85:
+        if candidate['valid_format'] and candidate['min_character_confidence']>=.80:
             votes[candidate['text']]=votes.get(candidate['text'],0)+1
     candidates.sort(key=lambda c:(c['valid_format'],votes.get(c['text'],0),c['min_character_confidence']),reverse=True)
     winner=candidates[0] if candidates else None
     valid=bool(winner and winner['valid_format'])
     reasons=[]
     if not valid:reasons.append('unknown_layout' if winner and winner['text'] else 'no_text')
-    if winner and winner['min_character_confidence']<.85:reasons.append('low_confidence')
-    if winner and votes.get(winner['text'],0)<2:reasons.append('preprocessing_disagreement')
+    if winner and winner['min_character_confidence']<.80:reasons.append('low_confidence')
+    high_conf_single=bool(winner and winner['confidence']>=.98 and winner['min_character_confidence']>=.90)
+    if winner and votes.get(winner['text'],0)<2 and not high_conf_single:reasons.append('preprocessing_disagreement')
     accepted=valid and not reasons
     return {'plate_number':winner['text'] if accepted else None,
         'suggested_plate':winner['text'] if winner and valid else None,
@@ -449,7 +450,47 @@ def recognize_plate(image, profile="vn", engine=None):
         model,config=_plate_paths()
         engine='plate' if model.is_file() and config.is_file() else 'easyocr'
     if engine=='plate':
-        return _recognize_specialist(image,profile)
+        res = _recognize_specialist(image, profile)
+        pn = res.get('plate_number')
+        sp = res.get('suggested_plate')
+        conf = res.get('confidence') or 0
+        valid = res.get('valid_format')
+
+        # If high confidence and valid format, return immediately
+        if pn and conf >= 0.99:
+            return res
+
+        # Check EasyOCR for difficult/uncertain cases (second opinion)
+        if not pn or conf < 0.985 or not valid:
+            try:
+                easy = _recognize_easyocr(image, profile)
+                easy_pn = easy.get('plate_number')
+                easy_sp = easy.get('suggested_plate')
+                easy_conf = easy.get('confidence') or 0
+                easy_valid = easy.get('valid_format')
+
+                # Consensus
+                if sp and easy_sp and sp == easy_sp:
+                    res['plate_number'] = sp
+                    res['confidence'] = max(conf, easy_conf)
+                    res['rejection_reasons'] = []
+                    res['acceptance_basis'] = 'engine_consensus'
+                    return res
+                # High confidence EasyOCR
+                if easy_pn and easy_conf >= 0.90:
+                    return {**easy, 'engine': 'easyocr', 'acceptance_basis': 'easyocr_fallback'}
+                if easy_sp and easy_valid and easy_conf >= 0.85:
+                    easy['plate_number'] = easy_sp
+                    return {**easy, 'engine': 'easyocr', 'acceptance_basis': 'easyocr_high_confidence_suggestion'}
+            except Exception:
+                pass
+
+        # Fallback to suggested plate if valid format
+        if not res.get('plate_number') and sp and valid and conf >= 0.70:
+            res['plate_number'] = sp
+            res['acceptance_basis'] = 'specialist_format_valid'
+
+        return res
     return {**_recognize_easyocr(image,profile),'engine':'easyocr','ocr_model':'EasyOCR english_g2'}
 
 

@@ -53,11 +53,12 @@ Sao chép `.env.example` thành `.env` và đặt `ALPR_API_KEY` hợp lệ trư
 .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
-Có `/health`, `POST /capture` và `GET /images/{image_id}`. Hai endpoint sau
-cần header `X-API-Key`. API hiện có giữ nguyên luồng chụp riêng; công cụ
-webcam dùng pipeline nhận diện đã cải thiện. Không mở hai luồng camera
-cùng lúc. Backend đã có API proxy xác thực tại `/api/v1/alpr/capture` và
-`/api/v1/alpr/images/{image_id}`; xem [hướng dẫn tích hợp](../docs/alpr_integration.md).
+Có `/health`, `POST /capture`, `POST /recognize` và `GET /images/{image_id}`.
+Các endpoint nhận diện và ảnh cần header `X-API-Key`. `/capture` chụp webcam
+trên máy AI; `/recognize` nhận ảnh từ camera trình duyệt của làn vào/ra mà
+không mở webcam trên máy AI. Không chạy `camera.py` và `/capture` đồng thời
+trên cùng thiết bị camera. Frontend gọi qua các API proxy xác thực của backend;
+xem [hướng dẫn camera hai làn](../docs/alpr_integration.md).
 
 ## Dữ liệu được giữ lại sau dọn dẹp
 
