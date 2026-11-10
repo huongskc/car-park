@@ -70,9 +70,11 @@ dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px;margin:14px 0 0}dt{
 #toast.on{opacity:1;transform:none}#toast.e{border-left-color:var(--bad)}
 /* ---------- Ảnh chụp ALPR ---------- */
 .camera-card{display:flex;flex-direction:column;gap:8px}
-.camera-screen{position:relative;width:100%;height:220px;background:#0b1118;border-radius:var(--r);overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd)}
-.camera-screen img{width:100%;height:100%;object-fit:contain}
-.camera-screen img[hidden]{display:none}
+.camera-heading{display:flex;justify-content:space-between;align-items:center}
+.camera-heading h3{margin:0;font-size:15px}
+.camera-screen{position:relative;width:100%;aspect-ratio:16/9;background:#0b1118;border-radius:var(--r);overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd)}
+.camera-screen video,.camera-preview{width:100%;height:100%;object-fit:cover}
+.camera-screen video,.camera-preview:not([hidden]){display:block}
 .camera-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:#8b9bb0;text-align:center;padding:12px}
 .camera-placeholder[hidden]{display:none}
 .camera-placeholder span{font-weight:600;font-size:14px;color:#cfd8e3}

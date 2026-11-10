@@ -66,6 +66,12 @@ class ALPRService:
         result.image_url = f"/api/v1/alpr/images/{result.image_id}"
         return result
 
+    async def preview(self, lane: str) -> bytes:
+        response = await self._request("GET", "preview", params={"lane": lane})
+        if response.headers.get("content-type", "").split(";")[0] != "image/jpeg":
+            raise HTTPException(502, "AI service trả về ảnh không hợp lệ.")
+        return response.content
+
     async def image(self, image_id: str) -> bytes:
         response = await self._request("GET", f"images/{image_id}")
         if response.headers.get("content-type", "").split(";")[0] != "image/jpeg":

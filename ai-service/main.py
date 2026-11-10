@@ -2,6 +2,8 @@ import os
 import re
 import sys
 import threading
+import time
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -10,8 +12,8 @@ import numpy as np
 
 import cv2
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -34,7 +36,6 @@ IMAGE_DIR.mkdir(exist_ok=True)
 MAX_STORED_IMAGES = int(os.getenv('MAX_STORED_IMAGES', '500'))
 CAMERA_LOCK = threading.Lock()
 _ACTIVE_RECOGNIZE_WORKERS = 0
-app = FastAPI(title='Smart Parking ALPR Edge Service', version='0.1.0')
 
 class CaptureRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=64, pattern=r'^[A-Za-z0-9_-]+$')
@@ -60,25 +61,92 @@ def roi_for(lane: str, frame):
     return frame[int(y1*h):int(y2*h), int(x1*w):int(x2*w)]
 
 
+class LiveCamera:
+    """Keep one webcam open so the dashboard can show a live frame."""
+
+    def __init__(self):
+        self._frame = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name='webcam', daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _open(self):
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(CAMERA_INDEX)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def _loop(self):
+        cap = None
+        while not self._stop.is_set():
+            if cap is None or not cap.isOpened():
+                cap = self._open()
+                if not cap.isOpened():
+                    cap.release()
+                    cap = None
+                    time.sleep(1)
+                    continue
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                cap.release()
+                cap = None
+                time.sleep(0.3)
+                continue
+            with self._lock:
+                self._frame = frame
+        if cap is not None:
+            cap.release()
+
+    def frame(self):
+        with self._lock:
+            if self._frame is None:
+                return None
+            return self._frame.copy()
+
+
+live_camera = LiveCamera()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    live_camera.start()
+    yield
+    live_camera.stop()
+
+
+app = FastAPI(title='Smart Parking ALPR Edge Service', version='0.1.0', lifespan=lifespan)
+
+
 def snap():
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap.release()
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        cap.release()
-        raise HTTPException(503, 'Không mở được webcam')
-    try:
-        frame = None
-        for _ in range(8):
-            ok, current = cap.read()
-            if ok:
-                frame = current
-        if frame is None:
-            raise HTTPException(503, 'Không đọc được ảnh từ webcam')
-        return frame
-    finally:
-        cap.release()
+    frame = live_camera.frame()
+    if frame is None:
+        raise HTTPException(503, 'Không đọc được ảnh từ webcam')
+    return frame
+
+
+def jpeg_bytes(frame: np.ndarray) -> bytes:
+    height, width = frame.shape[:2]
+    if width > 960:
+        frame = cv2.resize(frame, (960, max(1, int(height * 960 / width))))
+    ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    if not ok:
+        raise HTTPException(500, 'Không tạo được ảnh xem trước')
+    return encoded.tobytes()
 
 
 @app.get('/health')
@@ -153,6 +221,14 @@ def _cleanup_old_images():
         pass
 
 
+@app.get('/preview', dependencies=[Depends(authenticate)])
+def preview(lane: Literal['IN', 'OUT'] = Query()):
+    crop = roi_for(lane, snap())
+    if not crop.size:
+        raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
+    return Response(jpeg_bytes(crop), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+
 @app.post('/capture', dependencies=[Depends(authenticate)])
 def capture(req: CaptureRequest):
     if not CAMERA_LOCK.acquire(blocking=False):
@@ -189,16 +265,22 @@ def process_frame(req: CaptureRequest, frame: np.ndarray):
     else:
         crop = lane_frame[bbox[1]:bbox[3], bbox[0]:bbox[2]] if bbox else lane_frame
         result = recognize_plate(crop)
+    if not result.get('plate_number') and crop is not lane_frame:
+        full = recognize_plate(lane_frame)
+        if full.get('plate_number'):
+            result, crop = full, lane_frame
     filename = f'{req.request_id}_{uuid4().hex[:8]}.jpg'
     if not cv2.imwrite(str(IMAGE_DIR / filename), crop):
         raise HTTPException(500, 'Không lưu được ảnh')
     _cleanup_old_images()
+    plate = result.get('plate_number')
     return {
         **result,
+        'needs_confirmation': not bool(plate),
         'request_id': req.request_id,
         'session_id': req.session_id,
         'lane': req.lane,
-        'status': 'success' if result.get('plate_number') else 'no_text_detected',
+        'status': 'success' if plate else 'no_text_detected',
         'image_id': filename,
     }
 
