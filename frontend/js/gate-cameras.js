@@ -7,25 +7,34 @@ window.GateCameras = (() => {
   function view(lane) {
     return `<article id="gate-camera-${lane}" class="card camera-card"><h3>Camera làn ${lane==='IN'?'vào':'ra'}</h3>
       <label>Mã phiên đã tạo<input data-role="session" placeholder="SES_..." maxlength="64"></label>
-      <div class="camera-screen"><img data-role="preview" class="camera-preview" alt="Webcam làn ${lane==='IN'?'vào':'ra'}" hidden><div class="camera-placeholder">Đang kết nối webcam…</div></div>
+      <div class="camera-screen"><img data-role="preview" class="camera-preview" alt="Webcam làn ${lane==='IN'?'vào':'ra'}" hidden><div class="camera-placeholder" data-role="placeholder">Đang kết nối webcam…</div></div>
       <div class="row"><button type="button" class="go sm" data-action="capture">Chụp làn ${lane==='IN'?'vào':'ra'}</button>
       <button type="button" class="sec sm" data-action="use" disabled>Dùng ảnh cho phiên</button></div>
       <p class="camera-status" data-role="status" role="status">Nhập mã phiên rồi chụp ảnh.</p>
-      <div class="camera-result"><div>
+      <div class="camera-result"><img data-role="image" alt="Ảnh chụp làn ${lane==='IN'?'vào':'ra'}" style="max-width:120px;max-height:80px;object-fit:contain" hidden><div>
       <strong data-role="plate">Chưa chụp ảnh</strong><span data-role="details"></span></div></div></article>`;
   }
   function paint(lane) {
     const p=panel(lane), s=state[lane]; if(!p)return;
-    p.querySelector('[data-action="capture"]').disabled=!!s.busy;
-    p.querySelector('[data-action="use"]').disabled=!s.result||!s.session||s.result.needs_confirmation===false;
-    p.querySelector('[data-role="status"]').textContent=s.message||'Nhập mã phiên rồi chụp ảnh.';
-    p.querySelector('[data-role="plate"]').textContent=s.result
+    const capBtn=p.querySelector('[data-action="capture"]');
+    if(capBtn)capBtn.disabled=!!s.busy;
+    const useBtn=p.querySelector('[data-action="use"]');
+    if(useBtn)useBtn.disabled=!s.result||!s.session||s.result.needs_confirmation===false;
+    const statusEl=p.querySelector('[data-role="status"]');
+    if(statusEl)statusEl.textContent=s.message||'Nhập mã phiên rồi chụp ảnh.';
+    const plateEl=p.querySelector('[data-role="plate"]');
+    if(plateEl)plateEl.textContent=s.result
       ? s.result.plate_number||s.result.suggested_plate||'Không đọc được biển'
       : 'Chưa chụp ảnh';
-    p.querySelector('[data-role="details"]').textContent=s.result?(s.result.needs_confirmation?'Cần xác nhận ảnh · ':'OCR tự tin · ')+(s.result.confidence==null?'':Math.round(s.result.confidence*100)+'%'):'';
-    const img=p.querySelector('[data-role="image"]');img.hidden=!s.image;
-    p.querySelector('[data-role="placeholder"]').hidden=!!s.image;
-    if(s.image)img.src=s.image;else img.removeAttribute('src');
+    const detailsEl=p.querySelector('[data-role="details"]');
+    if(detailsEl)detailsEl.textContent=s.result?(s.result.needs_confirmation?'Cần xác nhận ảnh · ':'OCR tự tin · ')+(s.result.confidence==null?'':Math.round(s.result.confidence*100)+'%'):'';
+    const img=p.querySelector('[data-role="image"]');
+    if(img){
+      img.hidden=!s.image;
+      if(s.image)img.src=s.image;else img.removeAttribute('src');
+    }
+    const ph=p.querySelector('[data-role="placeholder"]');
+    if(ph&&!s.previewUrl)ph.hidden=!!s.image;
   }
   async function capture(lane) {
     const s=state[lane], session=panel(lane).querySelector('[data-role="session"]').value.trim();
@@ -62,8 +71,10 @@ window.GateCameras = (() => {
       const url=URL.createObjectURL(await response.blob());
       const img=p.querySelector('[data-role="preview"]');
       if(s.previewUrl)URL.revokeObjectURL(s.previewUrl);
-      s.previewUrl=url;img.src=url;img.hidden=false;
-      p.querySelector('.camera-placeholder').hidden=true;
+      s.previewUrl=url;
+      if(img){img.src=url;img.hidden=false;}
+      const ph=p.querySelector('.camera-placeholder');
+      if(ph)ph.hidden=true;
     }catch(_){
       const holder=p.querySelector('.camera-placeholder');
       if(holder&&!s.previewUrl)holder.textContent='Không xem được webcam.';
