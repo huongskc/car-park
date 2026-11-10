@@ -68,27 +68,20 @@ dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px;margin:14px 0 0}dt{
 .login h1{margin:0;font-size:20px}
 #toast{position:fixed;right:20px;bottom:20px;max-width:420px;padding:12px 18px;background:var(--asp);color:#fff;border-radius:var(--r);border-left:5px solid var(--ok);opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;z-index:9;word-break:break-all}
 #toast.on{opacity:1;transform:none}#toast.e{border-left-color:var(--bad)}
-/* ---------- Khung Camera trực tiếp & ALPR ---------- */
+/* ---------- Ảnh chụp ALPR ---------- */
 .camera-card{display:flex;flex-direction:column;gap:8px}
-.camera-heading{display:flex;justify-content:space-between;align-items:center}
-.camera-heading h3{margin:0;font-size:15px}
-.camera-screen{position:relative;width:100%;aspect-ratio:16/9;background:#0b1118;border-radius:var(--r);overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd)}
-.camera-screen video{width:100%;height:100%;object-fit:cover;display:block}
+.camera-screen{position:relative;width:100%;height:220px;background:#0b1118;border-radius:var(--r);overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd)}
+.camera-screen img{width:100%;height:100%;object-fit:contain}
+.camera-screen img[hidden]{display:none}
 .camera-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:#8b9bb0;text-align:center;padding:12px}
+.camera-placeholder[hidden]{display:none}
 .camera-placeholder span{font-weight:600;font-size:14px;color:#cfd8e3}
 .camera-placeholder small{font-size:12px;opacity:.8}
-.camera-live{position:absolute;top:10px;left:10px;background:rgba(200,64,47,.9);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:.5px;z-index:2}
-.camera-controls{margin-top:4px}
-.camera-auto{display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:6px;font-size:13px;cursor:pointer;user-select:none;color:var(--tx)}
-.camera-auto input[type="checkbox"]{margin:0;width:16px;height:16px;cursor:pointer}
 .camera-status{margin:6px 0;font-size:12px;color:var(--mt);line-height:1.4}
 .camera-status.camera-error{color:var(--bad);font-weight:600}
 .camera-result{display:flex;gap:12px;align-items:center;background:#f6f8fa;border:1px solid var(--bd);border-radius:var(--r);padding:10px;min-height:58px}
-.camera-result img{width:76px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--bd);background:#000}
 .camera-result div{display:flex;flex-direction:column;min-width:0}
-.camera-result small{color:var(--mt);font-size:11px}
 .camera-result strong{font-size:16px;color:var(--tx);font-family:monospace,monospace;letter-spacing:1px}
 .camera-result span{font-size:12px;color:var(--mt);white-space:normal}
-.camera-use{margin-top:4px;width:100%}
 @media(max-width:820px){#app{grid-template-columns:1fr}aside{position:static;height:auto;display:flex;flex-wrap:wrap;padding:8px}.logo,.grp{display:none}aside a{border-left:0;border-bottom:3px solid transparent;padding:8px 12px}aside a.on{border-bottom-color:var(--line)}main{padding:16px}header{padding:12px 16px}}
 @media(prefers-reduced-motion:reduce){#toast{transition:none}}
