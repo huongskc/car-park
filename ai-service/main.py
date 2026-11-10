@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import sys
@@ -13,7 +14,7 @@ import numpy as np
 import cv2
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -83,7 +84,10 @@ class LiveCamera:
             self._thread.join(timeout=2)
 
     def _open(self):
-        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+        if sys.platform.startswith('win'):
+            cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
         if not cap.isOpened():
             cap.release()
             cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -227,6 +231,37 @@ def preview(lane: Literal['IN', 'OUT'] = Query()):
     if not crop.size:
         raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
     return Response(jpeg_bytes(crop), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+
+async def mjpeg_stream_generator(lane: str, fps: int = 15):
+    delay = 1.0 / max(1, fps)
+    while True:
+        try:
+            frame = live_camera.frame()
+            if frame is not None:
+                crop = roi_for(lane, frame)
+                if crop.size:
+                    h, w = crop.shape[:2]
+                    if w > 640:
+                        crop = cv2.resize(crop, (640, max(1, int(h * 640 / w))))
+                    ok, encoded = cv2.imencode('.jpg', crop, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                    if ok:
+                        data = encoded.tobytes()
+                        yield (
+                            b'--frame\r\n'
+                            b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n'
+                        )
+        except Exception:
+            pass
+        await asyncio.sleep(delay)
+
+
+@app.get('/stream', dependencies=[Depends(authenticate)])
+async def stream(lane: Literal['IN', 'OUT'] = Query()):
+    return StreamingResponse(
+        mjpeg_stream_generator(lane, fps=15),
+        media_type='multipart/x-mixed-replace; boundary=frame'
+    )
 
 
 @app.post('/capture', dependencies=[Depends(authenticate)])

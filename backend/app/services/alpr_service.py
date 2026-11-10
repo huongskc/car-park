@@ -78,5 +78,20 @@ class ALPRService:
             raise HTTPException(502, "AI service trả về ảnh không hợp lệ.")
         return response.content
 
+    async def stream(self, lane: str):
+        if not settings.INTERNAL_ALPR_API_KEY.strip():
+            raise HTTPException(503, "Chưa cấu hình INTERNAL_ALPR_API_KEY cho backend.")
+        url = f"{settings.ALPR_SERVICE_URL.rstrip('/')}/stream?lane={lane}"
+        headers = {"X-API-Key": settings.INTERNAL_ALPR_API_KEY}
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        raise HTTPException(resp.status_code, "Không kết nối được luồng camera AI.")
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+        except (httpx.RequestError, httpx.TimeoutException):
+            return
+
 
 alpr_service = ALPRService()

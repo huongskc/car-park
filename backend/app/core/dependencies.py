@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -21,11 +21,12 @@ ROLE_HIERARCHY: dict[UserRole, int] = {
 
 
 def get_current_user(
+    request: Request,
     auth: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
     """
-    Dependency trích xuất và xác thực người dùng từ Bearer JWT Token.
+    Dependency trích xuất và xác thực người dùng từ Bearer JWT Token (hoặc query param ?token= cho media stream).
     Thực hiện đối soát trạng thái is_active trực tiếp từ MySQL để đảm bảo
     chặn tức thì khi tài khoản bị vô hiệu hóa (Zero-delay Revocation).
     """
@@ -35,10 +36,15 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    if auth is None or not auth.credentials:
+    token = None
+    if auth is not None and auth.credentials:
+        token = auth.credentials
+    elif request is not None and "token" in request.query_params:
+        token = request.query_params.get("token")
+
+    if not token:
         raise credentials_exception
 
-    token = auth.credentials
     payload = decode_access_token(token)
     if payload is None:
         raise credentials_exception
