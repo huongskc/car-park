@@ -2,12 +2,12 @@
 // AI service owns the webcam; each button requests one frame from its lane ROI.
 window.GateCameras = (() => {
   const state = {IN:{}, OUT:{}};
-  let config = null;
+  let config = null, previewTimer = null;
   const panel = lane => document.getElementById('gate-camera-' + lane);
   function view(lane) {
     return `<article id="gate-camera-${lane}" class="card camera-card"><h3>Camera làn ${lane==='IN'?'vào':'ra'}</h3>
       <label>Mã phiên đã tạo<input data-role="session" placeholder="SES_..." maxlength="64"></label>
-      <div class="camera-screen"><div class="camera-placeholder">Webcam AI service · ROI_${lane}</div></div>
+      <div class="camera-screen"><img data-role="preview" class="camera-preview" alt="Webcam làn ${lane==='IN'?'vào':'ra'}" hidden><div class="camera-placeholder">Đang kết nối webcam…</div></div>
       <div class="row"><button type="button" class="go sm" data-action="capture">Chụp làn ${lane==='IN'?'vào':'ra'}</button>
       <button type="button" class="sec sm" data-action="use" disabled>Dùng ảnh cho phiên</button></div>
       <p class="camera-status" data-role="status" role="status">Nhập mã phiên rồi chụp ảnh.</p>
@@ -17,7 +17,7 @@ window.GateCameras = (() => {
   function paint(lane) {
     const p=panel(lane), s=state[lane]; if(!p)return;
     p.querySelector('[data-action="capture"]').disabled=!!s.busy;
-    p.querySelector('[data-action="use"]').disabled=!s.result||!s.session;
+    p.querySelector('[data-action="use"]').disabled=!s.result||!s.session||s.result.needs_confirmation===false;
     p.querySelector('[data-role="status"]').textContent=s.message||'Nhập mã phiên rồi chụp ảnh.';
     p.querySelector('[data-role="plate"]').textContent=s.result?.plate_number||s.result?.suggested_plate||'Không đọc được biển';
     p.querySelector('[data-role="details"]').textContent=s.result?(s.result.needs_confirmation?'Cần xác nhận ảnh · ':'OCR tự tin · ')+(s.result.confidence==null?'':Math.round(s.result.confidence*100)+'%'):'';
@@ -42,19 +42,51 @@ window.GateCameras = (() => {
         const photo=await fetch(new URL(result.image_url,new URL(base).origin),{headers:{Authorization:auth},cache:'no-store'});
         if(photo.ok)s.image=URL.createObjectURL(await photo.blob());
       }
-      s.message='Đối chiếu ảnh và xác nhận biển trước khi dùng.';
+      s.message=result.needs_confirmation?'Đối chiếu ảnh và xác nhận biển trước khi dùng.':'Đã tự ghi biển '+(result.plate_number||result.suggested_plate||'')+'.';
     }catch(error){s.message=error.message||'Không kết nối được dịch vụ AI.'}
     finally{s.busy=false;paint(lane)}
   }
+  async function refreshPreview(lane){
+    const s=state[lane];
+    if(!config||s.previewBusy)return;
+    const p=panel(lane);if(!p)return;
+    s.previewBusy=true;
+    try{
+      const base=config.apiBase.replace(/\/$/,'');
+      const response=await fetch(base+'/alpr/preview?lane='+lane,{headers:{Authorization:'Bearer '+config.session.access_token},cache:'no-store'});
+      if(response.status===401){config.onUnauthorized?.();return}
+      if(!response.ok)throw new Error('preview');
+      const url=URL.createObjectURL(await response.blob());
+      const img=p.querySelector('[data-role="preview"]');
+      if(s.previewUrl)URL.revokeObjectURL(s.previewUrl);
+      s.previewUrl=url;img.src=url;img.hidden=false;
+      p.querySelector('.camera-placeholder').hidden=true;
+    }catch(_){
+      const holder=p.querySelector('.camera-placeholder');
+      if(holder&&!s.previewUrl)holder.textContent='Không xem được webcam.';
+    }finally{s.previewBusy=false}
+  }
   function mount(options){
+    if(previewTimer)clearInterval(previewTimer);
     config=options;
     for(const lane of ['IN','OUT']){
       const p=panel(lane);if(!p)continue;
       p.querySelector('[data-action="capture"]').onclick=()=>capture(lane);
       p.querySelector('[data-action="use"]').onclick=()=>config.onUsePlate?.(lane,state[lane].session,state[lane].result);
       paint(lane);
+      refreshPreview(lane);
     }
+    previewTimer=setInterval(()=>{refreshPreview('IN');refreshPreview('OUT')},800);
   }
-  function unmount(){for(const lane of ['IN','OUT']){if(state[lane].image)URL.revokeObjectURL(state[lane].image);state[lane]={}}config=null}
+  function unmount(){
+    if(previewTimer)clearInterval(previewTimer);
+    previewTimer=null;
+    for(const lane of ['IN','OUT']){
+      if(state[lane].image)URL.revokeObjectURL(state[lane].image);
+      if(state[lane].previewUrl)URL.revokeObjectURL(state[lane].previewUrl);
+      state[lane]={};
+    }
+    config=null;
+  }
   return {view,mount,unmount};
 })();

@@ -332,7 +332,7 @@ def _recognize_easyocr(image, profile="vn"):
         'normalized_text': winner['text'] if winner else '',
         'lines': lines,
         'candidates': candidates,
-        'needs_confirmation': True,
+        'needs_confirmation': not accepted,
         'valid_format': valid,
         'profile': profile,
         'observations': winner.get('observations', []) if winner else [],
@@ -430,7 +430,7 @@ def _recognize_specialist(image, profile):
         'char_probs':winner['char_probs'] if winner else [],
         'raw_text':winner['raw_text'] if winner else '', 'normalized_text':winner['text'] if winner else '',
         'lines':winner['lines'] if winner else [],'candidates':candidates,
-        'needs_confirmation':True,'valid_format':valid,'profile':profile,
+        'needs_confirmation':not accepted,'valid_format':valid,'profile':profile,
         'engine':'plate','ocr_model':str(_plate_paths()[0]),
         'region':winner.get('region') if winner else None,
         'region_confidence':winner.get('region_confidence') if winner else None,
@@ -458,6 +458,7 @@ def recognize_plate(image, profile="vn", engine=None):
 
         # If high confidence and valid format, return immediately
         if pn and conf >= 0.99:
+            res['needs_confirmation'] = False
             return res
 
         # Check EasyOCR for difficult/uncertain cases (second opinion)
@@ -473,6 +474,7 @@ def recognize_plate(image, profile="vn", engine=None):
                 if sp and easy_sp and sp == easy_sp:
                     res['plate_number'] = sp
                     res['confidence'] = max(conf, easy_conf)
+                    res['needs_confirmation'] = False
                     res['rejection_reasons'] = []
                     res['acceptance_basis'] = 'engine_consensus'
                     return res
@@ -488,6 +490,7 @@ def recognize_plate(image, profile="vn", engine=None):
         # Fallback to suggested plate if valid format
         if not res.get('plate_number') and sp and valid and conf >= 0.70:
             res['plate_number'] = sp
+            res['needs_confirmation'] = False
             res['acceptance_basis'] = 'specialist_format_valid'
 
         return res
