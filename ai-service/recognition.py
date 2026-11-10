@@ -251,7 +251,9 @@ class PlatePipeline:
             bounds = [x, y, x+w, y+h]
             search = frame[y:y+h, x:x+w]
         detect_started = perf_counter()
-        detections = self.detector.detect(search, include_fallback=True)
+        detections = self.detector.detect(search, include_fallback=False)
+        if not detections and self.detector.fallback_path is not None:
+            detections = self.detector.detect(search, include_fallback=True)
         detection_ms = (perf_counter() - detect_started) * 1000
         for detection in detections:
             x1, y1, x2, y2 = detection['bbox']

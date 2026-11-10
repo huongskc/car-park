@@ -456,13 +456,19 @@ def recognize_plate(image, profile="vn", engine=None):
         conf = res.get('confidence') or 0
         valid = res.get('valid_format')
 
-        # If high confidence and valid format, return immediately
-        if pn and conf >= 0.99:
-            res['needs_confirmation'] = False
+        # If plate number accepted by specialist, return immediately (fast ~75ms)
+        if pn and conf >= 0.70:
             return res
 
-        # Check EasyOCR for difficult/uncertain cases (second opinion)
-        if not pn or conf < 0.985 or not valid:
+        # Fallback to suggested plate if format is plausible
+        if not pn and sp and valid and conf >= 0.60:
+            res['plate_number'] = sp
+            res['acceptance_basis'] = 'specialist_format_valid'
+            return res
+
+        # Heavy EasyOCR fallback (takes ~25s on CPU) only if explicitly enabled
+        enable_heavy_fallback = os.getenv('ENABLE_EASYOCR_FALLBACK', '0').strip().lower() in ('1', 'true', 'yes')
+        if enable_heavy_fallback and (not pn or not valid or conf < 0.60):
             try:
                 easy = _recognize_easyocr(image, profile)
                 easy_pn = easy.get('plate_number')
@@ -486,12 +492,6 @@ def recognize_plate(image, profile="vn", engine=None):
                     return {**easy, 'engine': 'easyocr', 'acceptance_basis': 'easyocr_high_confidence_suggestion'}
             except Exception:
                 pass
-
-        # Fallback to suggested plate if valid format
-        if not res.get('plate_number') and sp and valid and conf >= 0.70:
-            res['plate_number'] = sp
-            res['needs_confirmation'] = False
-            res['acceptance_basis'] = 'specialist_format_valid'
 
         return res
     return {**_recognize_easyocr(image,profile),'engine':'easyocr','ocr_model':'EasyOCR english_g2'}

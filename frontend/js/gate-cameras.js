@@ -11,17 +11,20 @@ window.GateCameras = (() => {
       <div class="row"><button type="button" class="go sm" data-action="capture">Chụp làn ${lane==='IN'?'vào':'ra'}</button>
       <button type="button" class="sec sm" data-action="use" disabled>Dùng ảnh cho phiên</button></div>
       <p class="camera-status" data-role="status" role="status">Nhập mã phiên rồi chụp ảnh.</p>
-      <div class="camera-result"><img data-role="image" alt="Ảnh biển số" hidden><div>
-      <strong data-role="plate">Chưa đọc biển số</strong><span data-role="details"></span></div></div></article>`;
+      <div class="camera-result"><div>
+      <strong data-role="plate">Chưa chụp ảnh</strong><span data-role="details"></span></div></div></article>`;
   }
   function paint(lane) {
     const p=panel(lane), s=state[lane]; if(!p)return;
     p.querySelector('[data-action="capture"]').disabled=!!s.busy;
     p.querySelector('[data-action="use"]').disabled=!s.result||!s.session||s.result.needs_confirmation===false;
     p.querySelector('[data-role="status"]').textContent=s.message||'Nhập mã phiên rồi chụp ảnh.';
-    p.querySelector('[data-role="plate"]').textContent=s.result?.plate_number||s.result?.suggested_plate||'Không đọc được biển';
+    p.querySelector('[data-role="plate"]').textContent=s.result
+      ? s.result.plate_number||s.result.suggested_plate||'Không đọc được biển'
+      : 'Chưa chụp ảnh';
     p.querySelector('[data-role="details"]').textContent=s.result?(s.result.needs_confirmation?'Cần xác nhận ảnh · ':'OCR tự tin · ')+(s.result.confidence==null?'':Math.round(s.result.confidence*100)+'%'):'';
     const img=p.querySelector('[data-role="image"]');img.hidden=!s.image;
+    p.querySelector('[data-role="placeholder"]').hidden=!!s.image;
     if(s.image)img.src=s.image;else img.removeAttribute('src');
   }
   async function capture(lane) {
