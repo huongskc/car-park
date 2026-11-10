@@ -13,7 +13,7 @@
 | **Port** | `1883` | TCP chuẩn (Không mã hóa SSL trong môi trường Lab) |
 | **Authentication** | Bắt buộc (`allow_anonymous false`) | Mosquitto quản lý qua `mosquitto_passwd` và `acl.conf` |
 | **Backend Username / Password** | `backend_admin` / `{CONFIGURED_IN_ENV}` | Quyền toàn cục: `readwrite parking/#` (Mật khẩu bí mật nạp qua `.env`) |
-| **ESP32 Username / Password** | `{DEVICE_ID}` / `{AUTH_TOKEN}` (hoặc thiết lập mẫu) | ACL giới hạn Topic Namespace theo `%u` |
+| **ESP32 Username / Password** | `{DEVICE_ID}` / mật khẩu MQTT do broker cấp | Tách riêng `auth_token` của payload; ACL giới hạn topic theo `%u` |
 | **Client ID** | `ESP32_{DEVICE_ID}` (VD: `ESP32_GATE_01`) | Khuyến nghị duy nhất trên toàn mạng Broker |
 | **Keep Alive** | `30` giây | Chu kỳ ping kiểm tra kết nối tầng giao vận MQTT |
 | **LWT (Last Will & Testament)** | Bắt buộc cấu hình khi gọi `connect()` | Broker tự động phát khi ESP32 mất nguồn hoặc đứt kết nối TCP |
@@ -95,7 +95,7 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
 
 > [!TIP]
 > **Bộ lọc khử nhiễu cảm biến siêu âm**:  
-> Backend tự động bỏ qua các giá trị $\le 2.0\text{ cm}$ (giá trị dội âm lỗi hoặc đứt dây tín hiệu thường trả về `0.0 cm`). Nếu khoảng cách nằm trong khoảng $(2.0\text{ cm}, \text{threshold}]$, ô đỗ được đánh giá là `OCCUPIED`. Ngược lại là `EMPTY`.
+> Backend bỏ qua mẫu $\le 2.0\text{ cm}$, cần **hai mẫu hợp lệ liên tiếp** để đổi trạng thái, bỏ mẫu cũ theo `sampledAt`. Sau 30 giây không có mẫu hợp lệ, ô thành `UNKNOWN` và không được cấp. Khi có phiên mở, mẫu trống chỉ giữ ô ở `RESERVED` đến lúc nhân viên xác nhận xe qua cổng ra.
 
 ---
 
@@ -143,13 +143,19 @@ Hệ thống Backend hỗ trợ 2 định dạng topic linh hoạt:
   - `status`: Bắt buộc. `"SUCCESS"` (thành công) hoặc `"FAILED"` (thất bại/kẹt cơ khí).
   - `reason`: Mô tả chi tiết kết quả cơ học hoặc mã lỗi phần cứng.
 
+ACK `SUCCESS` của `OPEN` chỉ ghi nhận lệnh đã được ESP32 xử lý. Backend
+chuyển phiên sang trạng thái chờ; Operator xác nhận xe thực sự qua bằng API.
+ACK trùng cùng `commandId` không thay đổi trạng thái lần hai. Lệnh thử lại
+có `commandId` mới.
+
 ---
 
 ## 4. Đặc tả Bản tin Outbound (Backend $\rightarrow$ ESP32)
 
-ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối thành công tới Mosquitto:
+ESP32 cần đăng ký (`subscribe`) 3 topic dưới đây khi vừa kết nối thành công tới Mosquitto:
 1. `parking/{site_id}/{device_id}/commands`
 2. `parking/{site_id}/{device_id}/config`
+3. `parking/{site_id}/{device_id}/feedback`
 
 ---
 
@@ -164,7 +170,8 @@ ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối
     "gate": "GATE_IN",
     "action": "OPEN",
     "reason": "Xác thực thẻ hợp lệ - Mở barrier đón xe",
-    "sentAt": "2026-10-17T15:35:00.123456"
+    "sentAt": "2026-10-17T15:35:00.123456",
+    "autoCloseMs": 30000
   }
   ```
 - **Hành vi Vi điều khiển ứng với từng `action`**:
@@ -172,11 +179,20 @@ ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối
     1. Kích hoạt còi Buzzer (nếu `buzzerEnabled = true`).
     2. Điều khiển Servo cổng chỉ định (`gate`) quay từ $0^\circ \rightarrow 90^\circ$.
     3. Gửi bản tin `ack` với `status: "SUCCESS"`.
-    4. Giữ mở trong khoảng thời gian `servoOpenTimeSec` (mặc định 10 giây).
+    4. Giữ mở 30 giây (`autoCloseMs`) nếu không ở chế độ giữ mở.
     5. Điều khiển Servo quay trở về $0^\circ$ (đóng cổng an toàn).
   - **`CLOSE`**: Cưỡng bức đóng Servo về $0^\circ$ ngay lập tức, sau đó gửi `ack`.
+  - **`HOLD_OPEN`**: Giữ cổng được chỉ định mở cho đến lệnh `RESUME_AUTO`, sau đó gửi ACK.
+  - **`RESUME_AUTO`**: Trả cổng về chế độ tự đóng 30 giây, sau đó gửi ACK.
   - **`REBOOT`**: Gửi `ack` thông báo chuẩn bị khởi động lại, sau đó gọi `ESP.restart()`.
   - **`UPDATE_CONFIG`**: Đọc lại thông số hoặc yêu cầu đồng bộ cấu hình mới.
+
+### 4.1a Phản hồi LCD khi từ chối RFID (`feedback`)
+
+- **Topic**: `parking/{site_id}/{device_id}/feedback`; QoS 1, `retain=false`.
+- **Payload**: `{"eventId":"rfid-123","gate":"GATE_IN","code":"LOT_FULL","message":"BAI DA DAY","issuedAt":"2026-11-10T10:00:00+07:00"}`.
+- **Mã**: `INVALID_CARD`, `CARD_IN_USE`, `LOT_FULL`, `EXIT_NOT_FOUND`, `PLATE_REVIEW`.
+- Đây là phản hồi hiển thị/buzzer, không phải lệnh mở cổng. `eventId` có thể null.
 
 ---
 
@@ -199,7 +215,7 @@ ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối
   1. Kiểm tra trường `version`: Nếu `version > current_version` trong bộ nhớ, tiếp nhận cấu hình mới.
   2. Cập nhật các biến toàn cục trong RAM:
      - `distanceThresholdCm`: Ngưỡng nhận diện có xe đỗ.
-     - `servoOpenTimeSec`: Thời gian giữ barrier mở trước khi tự hạ.
+     - `servoOpenTimeSec`: Trường cấu hình cũ; luồng `OPEN` hiện dùng `autoCloseMs=30000`.
      - `heartbeatIntervalSec`: Chu kỳ gửi bản tin `status`.
      - `buzzerEnabled`: Bật/tắt còi cảnh báo quẹt thẻ và mở barrier.
   3. Ghi lưu cấu hình mới vào `Preferences` (NVS Flash) để bảo toàn khi mất nguồn.
@@ -221,10 +237,11 @@ ESP32 cần đăng ký (`subscribe`) 2 topic dưới đây khi vừa kết nối
            String lwtTopic = "parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/status";
 
            // Đăng ký kết nối: client.connect(clientId, username, password, willTopic, willQos, willRetain, willMessage)
-           if (client.connect(DEVICE_ID, DEVICE_ID, DEVICE_TOKEN, lwtTopic.c_str(), 1, false, lwtPayload.c_str())) {
+           if (client.connect(DEVICE_ID, DEVICE_ID, MQTT_PASSWORD, lwtTopic.c_str(), 1, false, lwtPayload.c_str())) {
                // Đăng ký lại các topic nhận lệnh điều khiển và cấu hình
                client.subscribe(("parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/commands").c_str());
                client.subscribe(("parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/config").c_str());
+               client.subscribe(("parking/PTIT_ZONE_1/" + String(DEVICE_ID) + "/feedback").c_str());
 
                // Bắn ngay bản tin online kèm token
                String onlinePayload = "{\"status\":\"online\",\"token\":\"" + String(DEVICE_TOKEN) + "\"}";

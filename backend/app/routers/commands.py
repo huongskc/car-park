@@ -32,14 +32,15 @@ def send_device_command(
     Endpoint phát lệnh điều khiển phần cứng Barrier và bo mạch vi điều khiển ESP32:
     - `OPEN`: Mở barrier khẩn cấp (OPERATOR & ADMIN).
     - `CLOSE`: Đóng barrier cưỡng bức (OPERATOR & ADMIN).
+    - `HOLD_OPEN` / `RESUME_AUTO`: Giữ mở hoặc trả cổng về tự đóng sau 30 giây.
     - `REBOOT`: Khởi động lại vi điều khiển từ xa (Chỉ ADMIN).
     - `UPDATE_CONFIG`: Đồng bộ tham số cấu hình phần cứng (Chỉ ADMIN).
     - Tự động kiểm tra an toàn thiết bị (Safety Lock): Chặn phát lệnh nếu thiết bị Offline hoặc Suspended.
     - Lưu bản ghi lệnh ở trạng thái `SENT` và bắn bản tin MQTT JSON tới ESP32.
     - Tự động ghi vết kiểm toán vào bảng `audit_logs`.
     """
-    if payload.action == CommandAction.OPEN and not (payload.reason or "").strip():
-        raise HTTPException(status_code=400, detail="Mở cổng trực tiếp cần nhập lý do.")
+    if payload.action in (CommandAction.OPEN, CommandAction.HOLD_OPEN, CommandAction.RESUME_AUTO) and not (payload.reason or "").strip():
+        raise HTTPException(status_code=400, detail="Thao tác cổng trực tiếp cần nhập lý do.")
     return command_service.send_command(
         device_id=device_id,
         payload=payload,

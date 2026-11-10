@@ -90,11 +90,8 @@ deployment/mosquitto_passwd.demo.*.bak
 deployment/acl.demo.conf
 !deployment/mosquitto_passwd.example
 
-# Local database backups made before migrations
+# Local demo logs and database backups
 .local-backups/
 
-# Local software demo and simulator tooling
-simulator/
-deployment/compose.demo.yml
-deployment/demo_broker.py
+# Local demo broker secrets are ignored; simulator source is versioned.
 deployment/mosquitto.demo.conf

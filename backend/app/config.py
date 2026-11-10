@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     PARKING_FLAT_FEE: float = 20000.0
     SERVO_OPEN_TIMEOUT_SEC: int = 10
-    HEARTBEAT_TIMEOUT_SEC: int = 30
+    HEARTBEAT_TIMEOUT_SEC: int = 25
     DISTANCE_THRESHOLD_CM: float = 15.0
     ENTRY_GRACE_PERIOD_SEC: int = 180
     TESTING: bool = False

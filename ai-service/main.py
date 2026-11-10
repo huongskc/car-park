@@ -193,8 +193,6 @@ def process_frame(req: CaptureRequest, frame: np.ndarray):
     if not cv2.imwrite(str(IMAGE_DIR / filename), crop):
         raise HTTPException(500, 'Không lưu được ảnh')
     _cleanup_old_images()
-    if not result.get('plate_number') and result.get('suggested_plate') and result.get('valid_format') and (result.get('confidence') or 0) >= 0.70:
-        result['plate_number'] = result['suggested_plate']
     return {
         **result,
         'request_id': req.request_id,

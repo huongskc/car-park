@@ -139,6 +139,8 @@ class CommandService:
             "reason": payload.reason,
             "sentAt": datetime.now().isoformat(),
         }
+        if payload.action == CommandAction.OPEN:
+            mqtt_payload["autoCloseMs"] = 30000
         publish_error = None
         try:
             msg_info = mqtt_service.publish(command_topic, mqtt_payload, qos=1)
@@ -199,6 +201,10 @@ class CommandService:
                 f"[Command Service] Thiết bị gửi ACK không khớp: Lệnh '{command_id}' thuộc về '{command.device_id}', "
                 f"nhưng topic ACK đến từ '{topic_device_id}'"
             )
+            return False
+        reported_gate = payload.get("gate")
+        if reported_gate and str(reported_gate).upper() != command.gate_id.value:
+            logger.warning("ACK gate mismatch for command %s: %s", command_id, reported_gate)
             return False
 
         # 2. Kiểm tra tính toàn vẹn của trường 'status' trong ACK
@@ -262,8 +268,7 @@ class CommandService:
         db.commit()
         websocket_manager.broadcast_sync("BARRIER_STATUS", command_event)
         if session_event:
-            event = "CAR_ENTERED" if session_event["status"] == "ACTIVE" else "CAR_EXITED"
-            websocket_manager.broadcast_sync(event, session_event)
+            websocket_manager.broadcast_sync("SESSION_STATUS_CHANGED", session_event)
         return True
 
     def expire_stale_commands(self, timeout_seconds: int = 30, db: Optional[Session] = None) -> int:

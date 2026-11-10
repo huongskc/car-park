@@ -20,6 +20,7 @@ class SlotStatus(str, Enum):
     OCCUPIED = "OCCUPIED"
     RESERVED = "RESERVED"
     MAINTENANCE = "MAINTENANCE"
+    UNKNOWN = "UNKNOWN"
 
 
 class CardType(str, Enum):
@@ -34,9 +35,11 @@ class TariffFeeType(str, Enum):
 
 class SessionStatus(str, Enum):
     ENTRY_PENDING = "ENTRY_PENDING"
+    ENTRY_ACKED_WAITING_PASS = "ENTRY_ACKED_WAITING_PASS"
     ACTIVE = "ACTIVE"
     EXIT_READY = "EXIT_READY"
     PAID_WAITING_EXIT = "PAID_WAITING_EXIT"
+    EXIT_ACKED_WAITING_PASS = "EXIT_ACKED_WAITING_PASS"
     COMPLETED = "COMPLETED"
     PENDING_REVIEW = "PENDING_REVIEW"
     CANCELLED = "CANCELLED"
@@ -62,6 +65,8 @@ class GateId(str, Enum):
 class CommandAction(str, Enum):
     OPEN = "OPEN"
     CLOSE = "CLOSE"
+    HOLD_OPEN = "HOLD_OPEN"
+    RESUME_AUTO = "RESUME_AUTO"
     REBOOT = "REBOOT"
     UPDATE_CONFIG = "UPDATE_CONFIG"
 

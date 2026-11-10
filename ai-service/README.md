@@ -7,7 +7,8 @@ Hệ thống Python dùng YOLO tìm biển số và OCR CCT/ONNX đọc ký tự
 - `camera.py`: mở webcam, chụp và nhận diện; lưu ảnh cùng kết quả JSON.
 - `recognition.py`: nạp YOLO, chọn vùng biển số, cắt ảnh và điều phối OCR.
 - `ocr.py`: OCR chuyên biển số; giữ EasyOCR làm phương án đối chứng/tùy chọn.
-- `main.py`: dịch vụ FastAPI hiện có, dành cho tích hợp API khi cần.
+- `main.py`: dịch vụ FastAPI được backend dùng trong luồng RFID và dashboard;
+  mở một webcam, chọn `ROI_IN`/`ROI_OUT` theo làn.
 - `models/`: trọng số YOLO và OCR. Model phụ hiện ở `images/DetectLisence_YOLO11.pt`.
 - `images/`: ảnh và kết quả phát sinh khi vận hành.
 
@@ -54,11 +55,12 @@ Sao chép `.env.example` thành `.env` và đặt `ALPR_API_KEY` hợp lệ trư
 ```
 
 Có `/health`, `POST /capture`, `POST /recognize` và `GET /images/{image_id}`.
-Các endpoint nhận diện và ảnh cần header `X-API-Key`. `/capture` chụp webcam
-trên máy AI; `/recognize` nhận ảnh từ camera trình duyệt của làn vào/ra mà
-không mở webcam trên máy AI. Không chạy `camera.py` và `/capture` đồng thời
-trên cùng thiết bị camera. Frontend gọi qua các API proxy xác thực của backend;
-xem [hướng dẫn camera hai làn](../docs/alpr_integration.md).
+Các endpoint nhận diện và ảnh cần header `X-API-Key`. Luồng dashboard thật
+gọi backend `/alpr/capture`, AI service chụp từ một webcam và chọn ROI theo
+làn; RFID cũng gọi đường này qua backend. `/recognize` được giữ cho tích hợp
+cũ nhưng dashboard hiện không mở camera trình duyệt. Không chạy `camera.py`
+và `/capture` đồng thời trên cùng webcam. Xem
+[hướng dẫn ALPR](../docs/alpr_integration.md).
 
 ## Dữ liệu được giữ lại sau dọn dẹp
 

@@ -12,4 +12,5 @@ class Slot(Base):
     device_id = Column(String(50), ForeignKey("devices.id", ondelete="SET NULL"), nullable=True)
     status = Column(Enum(SlotStatus), nullable=False, default=SlotStatus.EMPTY, index=True)
     last_distance_cm = Column(Numeric(5, 2), nullable=True)
+    last_valid_sample_at = Column(DateTime, nullable=True)
     last_updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())

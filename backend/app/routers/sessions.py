@@ -9,12 +9,12 @@ from app.core.dependencies import require_role
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.alert import Alert
-from app.models.enums import AlertStatus, AlertType, SessionStatus, UserRole
+from app.models.enums import AlertStatus, AlertType, GateId, SessionStatus, UserRole
 from app.models.session import ParkingSession
 from app.models.user import User
 from app.schemas.session_schema import (
     SessionCreate, SessionOut, SessionResolvePlate, SessionCancel,
-    SessionCheckout, EntryPlateConfirm, ExitPrepare, EntryCancel,
+    SessionCheckout, EntryPlateConfirm, ExitPrepare, EntryCancel, PassageConfirm, ExitCancel,
 )
 from app.services import parking_flow
 
@@ -57,7 +57,26 @@ def get_session_detail(session_id: int, db: Session = Depends(get_db)):
 def confirm_entry_plate(session_id: int, payload: EntryPlateConfirm,
                         db: Session = Depends(get_db),
                         user: User = Depends(require_role(UserRole.OPERATOR))):
-    return parking_flow.confirm_entry_plate(db, session_id, payload.plate, user, payload.note)
+    return parking_flow.confirm_entry_plate(db, session_id, payload.plate, user,
+                                            payload.note, payload.image_url)
+
+
+@router.post("/{session_id}/confirm-entry", response_model=SessionOut)
+def confirm_entry_passage(session_id: int, payload: PassageConfirm,
+                          db: Session = Depends(get_db),
+                          user: User = Depends(require_role(UserRole.OPERATOR))):
+    if not payload.confirmed_passage:
+        raise HTTPException(400, "Cần xác nhận đã thấy xe qua cổng vào.")
+    return parking_flow.confirm_passage(db, session_id, GateId.GATE_IN, user, payload.note)
+
+
+@router.post("/{session_id}/confirm-exit", response_model=SessionOut)
+def confirm_exit_passage(session_id: int, payload: PassageConfirm,
+                         db: Session = Depends(get_db),
+                         user: User = Depends(require_role(UserRole.OPERATOR))):
+    if not payload.confirmed_passage:
+        raise HTTPException(400, "Cần xác nhận đã thấy xe qua cổng ra.")
+    return parking_flow.confirm_passage(db, session_id, GateId.GATE_OUT, user, payload.note)
 
 
 @router.post("/{session_id}/prepare-exit", response_model=SessionOut)
@@ -94,6 +113,14 @@ def cancel_entry(session_id: int, payload: EntryCancel,
                  user: User = Depends(require_role(UserRole.OPERATOR))):
     return parking_flow.cancel_entry(db, session_id, payload.reason, user,
                                      payload.confirmed_departure)
+
+
+@router.post("/{session_id}/cancel-exit", response_model=SessionOut)
+def cancel_exit(session_id: int, payload: ExitCancel, db: Session = Depends(get_db),
+                user: User = Depends(require_role(UserRole.OPERATOR))):
+    if not payload.confirmed_not_exited:
+        raise HTTPException(400, "Cần xác nhận xe chưa qua cổng ra.")
+    return parking_flow.cancel_exit(db, session_id, payload.reason, user)
 
 
 @router.post("/{session_id}/cancel", response_model=SessionOut)

@@ -1,50 +1,63 @@
-# Luồng nghiệp vụ demo phần mềm
+# Luồng demo Smart Parking
 
-Áp dụng sau `database/migrate_business_flow.sql`. Migration chỉ chạy một lần sau
-khi sao lưu DB; không chạy `database/seed.sql` trên DB project vì file đó xóa dữ liệu.
+Khởi tạo **database mới** từ thư mục gốc repo:
 
-## Xe vào
+```powershell
+mysql -u root -p -e "source database/schema.sql"
+mysql -u root -p -e "source database/seed.sql"
+```
 
-RFID `GATE_IN` hoặc `POST /api/v1/sessions` (gồm `device_id`, `card_uid`,
-`entry_plate`) dùng chung luồng. Backend chọn ô `EMPTY` đầu tiên trong cùng site,
-chuyển sang `RESERVED` và tạo phiên `ENTRY_PENDING`. Không có biển số thì nhân
-viên kiểm tra ảnh, nhập biển qua `PATCH /sessions/{id}/entry-plate` với `plate`
-và `note`. Biển thẻ tháng phải khớp biển đăng ký sau khi sửa OCR; nếu không khớp,
-cổng không mở. Chỉ ACK `GATE_IN/OPEN` thành công mới chuyển `ACTIVE` và ghi
-`entry_time`. Lệnh lỗi/hết hạn có thể gửi lại qua `POST /sessions/{id}/retry-gate`;
-hoặc hủy lượt chờ qua `POST /sessions/{id}/cancel-entry` với `reason`. Không hủy
-khi lệnh cổng còn `SENT`. Nếu ô báo `OCCUPIED`, nhân viên phải xác nhận xe đã
-rời bằng `confirmed_departure=true`; ô vẫn chờ xác nhận trống.
+`schema.sql` tạo `smart_parking_db` với cấu trúc hiện tại; `seed.sql`
+nạp tài khoản, thiết bị, thẻ và biểu phí demo. Hai file đặt lại bảng/dữ liệu
+nếu chạy lại, nên chỉ dùng với DB mới hoặc DB demo dùng một lần.
 
-## Ô đỗ và xe ra
+## Lượt vào
 
-Telemetry xác nhận ô đã cấp có xe bằng `OCCUPIED`; khi chưa có xe, ô vẫn
-`RESERVED`. Xe đến cổng ra được ghi qua RFID `GATE_OUT` hoặc
-`POST /sessions/{id}/prepare-exit` với `exit_plate`. Biển khớp chuyển
-`EXIT_READY`; biển thiếu/lệch chuyển `PENDING_REVIEW`. Nhân viên xác minh và
-duyệt bằng `PATCH /sessions/{id}/resolve-plate` với `approved`, `note`,
-`actual_exit_plate`; không cần quẹt lại.
+RFID `GATE_IN` hoặc `POST /api/v1/sessions` tạo phiên `ENTRY_PENDING`
+và giữ một ô `EMPTY` trong cùng site. RFID giữ ô trước khi gọi ALPR để thẻ
+sai hoặc bãi đầy không phải chờ camera. AI service sở hữu webcam laptop,
+chụp ROI_IN; dashboard chỉ gọi `POST /alpr/capture` sau khi có mã phiên.
+Ảnh OCR gốc lưu ở `entry_ocr_plate`; biển nhân viên xác nhận lưu ở
+`entry_plate`. Kết quả thiếu/chưa chắc chắn cần nhân viên đối chiếu ảnh
+và gọi `PATCH /sessions/{id}/entry-plate`. Thẻ tháng luôn phải khớp biển
+đăng ký, kể cả thẻ đã hết hạn.
 
-Vé lượt `EXIT_READY` cần nhân viên xác nhận đã nhận tiền qua
-`POST /sessions/{id}/checkout` (`payment_method=CASH` hoặc
-`SIMULATED_MOMO`). MoMo chỉ là mô phỏng, không gọi ví thật. Thẻ tháng còn hạn
-được miễn phí và tự gửi lệnh mở cổng sau khi biển khớp. Payment được ghi một
-lần, trạng thái `PAID_WAITING_EXIT` giữ nguyên nếu publish/ACK thất bại;
-`retry-gate` không thu tiền lần hai. Chỉ ACK `GATE_OUT/OPEN` thành công mới ghi
-`COMPLETED` và `exit_time`. ACK là mốc cho phép xe ra trong demo; chưa có cảm
-biến xác nhận xe qua cổng. Ô chỉ thành `EMPTY` khi telemetry xác nhận trống,
-hoặc nhân viên đã kiểm tra thực tế và cập nhật ô. Hủy ngoại lệ phiên
-`PENDING_REVIEW` sau khi xe đã rời cũng giữ ô đến bước xác nhận trống này.
+Lệnh `OPEN` gửi đến ESP32 với `autoCloseMs=30000`. ACK thành công chỉ
+chuyển sang `ENTRY_ACKED_WAITING_PASS`; Operator nhìn thấy xe qua rồi gọi
+`POST /sessions/{id}/confirm-entry`. Khi đó phiên `ACTIVE` và ghi
+`entry_time`. Lệnh thất bại có thể thử lại. Có thể hủy trước khi xe qua,
+nhưng không hủy khi lệnh còn `SENT`; nếu ô có xe hoặc `UNKNOWN`, cần xác nhận
+xe đã rời. LCD nhận mã từ chối qua topic `feedback`.
 
-Nút mở barrier trực tiếp dành cho sự cố, bắt buộc nhập lý do và ghi audit.
-Lệnh đó không tự đổi trạng thái phiên.
+## Ô đỗ và lượt ra
 
-## Biểu phí và dữ liệu cũ
+Hai mẫu hợp lệ liên tiếp xác định `OCCUPIED` hoặc trống. Mẫu `≤2 cm`
+bị bỏ qua; mẫu cũ không ghi đè mẫu mới. Quá 30 giây không có mẫu hợp lệ,
+ô thành `UNKNOWN` và không được cấp. Phiên mở vẫn giữ quyền cấp riêng
+kể cả lúc cảm biến báo trống.
 
-Chỉ hỗ trợ biểu phí `FLAT`: vé lượt dùng mức phí chốt lúc vào. Thẻ tháng có
-`valid_from` và `valid_until` (bao gồm cả ngày cuối); hết hạn được tính như vé
-lượt nhưng vẫn phải dùng đúng biển đăng ký. Nếu hết hạn khi xe đang đỗ, phí của
-lượt đó không đổi. `HOURLY` hiện chỉ có trong schema, chưa được tính.
+RFID `GATE_OUT` hoặc `POST /sessions/{id}/prepare-exit` chụp ROI_OUT
+và đối chiếu biển. Khớp chuyển `EXIT_READY`; lệch/thiếu/chưa chắc chắn
+chuyển `PENDING_REVIEW`. Duyệt phải có biển nhân viên xác nhận và lý do.
+Vé lượt cần nhân viên xác nhận tiền mặt hoặc MoMo giả lập. Thẻ tháng còn
+hạn phí 0đ tự gửi lệnh. Mỗi phiên tối đa một payment; số tiền chốt tại
+lúc vào theo biểu phí `FLAT` đang có hiệu lực và không đổi.
 
-Migration giữ nguyên phiên/thanh toán cũ. Bản ghi `CANCELLED` nhưng `PAID`
-đã tồn tại trước migration cần được nhóm đối soát riêng; migration không sửa nó.
+ACK cổng ra chuyển sang `EXIT_ACKED_WAITING_PASS`, chưa ghi giờ ra.
+Operator thấy xe qua rồi gọi `POST /sessions/{id}/confirm-exit`; phiên
+thành `COMPLETED`. Ô chỉ `EMPTY` nếu đã có hai mẫu trống hợp lệ và mẫu
+cuối trong 30 giây, hoặc nhân viên kiểm tra ô rồi cập nhật thủ công với lý do.
+Nếu xe quay đầu trước khi ra, `POST /sessions/{id}/cancel-exit` đưa phiên
+về `ACTIVE`, giữ payment để lượt ra tiếp không thu lại. Các lệnh thử lại
+có `commandId` mới; ACK trùng của một lệnh được bỏ qua.
+
+## Điều khiển trực tiếp
+
+Operator có thể gửi `OPEN`, `CLOSE`, `HOLD_OPEN`, `RESUME_AUTO` với lý do
+và audit. Các lệnh này không tự thay đổi phiên. Chế độ tự động tự đóng sau
+30 giây ở cả hai cổng theo hợp đồng firmware; ACK chỉ chứng minh ESP32
+đã chấp nhận lệnh, không chứng minh góc servo hoặc xe qua.
+
+Một ESP32 điều khiển hai servo và một webcam dùng hai ROI; một site chung.
+`HOURLY` chưa tính. Firmware, kiểm chứng ROI trên mô hình thật và số liệu
+ALPR 100 ảnh là việc tích hợp sau.

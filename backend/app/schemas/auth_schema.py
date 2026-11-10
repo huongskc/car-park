@@ -15,6 +15,11 @@ class ProfileUpdate(BaseModel):
     email: Optional[str] = Field(None, max_length=100)
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=6, max_length=100)
+
+
 class TokenResponse(BaseModel):
     """Schema trả về access token sau khi đăng nhập thành công."""
     access_token: str = Field(..., description="JWT Bearer Token")

@@ -81,9 +81,10 @@ def update_slot_status(
         .filter(
             ParkingSession.slot_id == slot_id,
             ParkingSession.status.in_([
-                SessionStatus.ENTRY_PENDING, SessionStatus.ACTIVE,
+                SessionStatus.ENTRY_PENDING, SessionStatus.ENTRY_ACKED_WAITING_PASS,
+                SessionStatus.ACTIVE,
                 SessionStatus.EXIT_READY, SessionStatus.PENDING_REVIEW,
-                SessionStatus.PAID_WAITING_EXIT,
+                SessionStatus.PAID_WAITING_EXIT, SessionStatus.EXIT_ACKED_WAITING_PASS,
             ]),
         )
         .with_for_update()
@@ -95,7 +96,7 @@ def update_slot_status(
             detail=(
                 f"Không thể cập nhật ô đỗ '{slot_id}' sang {payload.status.value} vì đang có phiên gửi xe chưa kết thúc "
                 f"(Phiên #{active_session.session_code}, trạng thái: {active_session.status.value}). "
-                "Cần hoàn tất lượt ra qua ACK hoặc hủy phiên trước khi đổi trạng thái ô."
+                "Cần xác nhận xe qua cổng ra hoặc hủy phiên trước khi đổi trạng thái ô."
             ),
         )
 

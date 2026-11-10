@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db, get_current_user
-from app.core.security import verify_password, create_access_token
+from app.core.security import verify_password, create_access_token, get_password_hash
 from app.models.user import User
 from app.models.audit import AuditLog
-from app.schemas.auth_schema import LoginRequest, TokenResponse, UserOut, ProfileUpdate
+from app.schemas.auth_schema import LoginRequest, TokenResponse, UserOut, ProfileUpdate, PasswordChange
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -105,3 +105,18 @@ def update_my_profile(payload: ProfileUpdate,
         db.commit()
         db.refresh(current_user)
     return current_user
+
+
+@router.post("/me/change-password", status_code=204, summary="Đổi mật khẩu cá nhân")
+def change_my_password(payload: PasswordChange,
+                       current_user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)) -> None:
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(400, "Mật khẩu hiện tại không đúng.")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(400, "Mật khẩu mới phải khác mật khẩu hiện tại.")
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.add(AuditLog(user_id=current_user.id, action="CHANGE_OWN_PASSWORD",
+                    resource_type="users", resource_id=str(current_user.id),
+                    details="Người dùng đã đổi mật khẩu cá nhân."))
+    db.commit()

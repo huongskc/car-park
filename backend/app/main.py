@@ -41,6 +41,7 @@ from app.routers import (
     telemetry_router,
     websocket_router,
 )
+from app.routers.payments import router as payments_router
 
 
 @asynccontextmanager
@@ -70,9 +71,10 @@ async def lifespan(app: FastAPI):
     async def _system_sweeper():
         while True:
             try:
-                await asyncio.sleep(15)
+                await asyncio.sleep(1)
                 await asyncio.to_thread(command_service.expire_stale_commands, timeout_seconds=30)
                 await asyncio.to_thread(device_service.expire_stale_devices, timeout_seconds=settings.HEARTBEAT_TIMEOUT_SEC)
+                await asyncio.to_thread(iot_listener.expire_stale_slots, timeout_seconds=30)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -122,6 +124,7 @@ app.include_router(devices_router, prefix="/api/v1")
 app.include_router(commands_router, prefix="/api/v1")
 app.include_router(alpr_router, prefix="/api/v1")
 app.include_router(tariffs_router, prefix="/api/v1")
+app.include_router(payments_router, prefix="/api/v1")
 app.include_router(telemetry_router, prefix="/api/v1")
 app.include_router(websocket_router)
 

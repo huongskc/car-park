@@ -7,12 +7,33 @@ from app.core.dependencies import require_role
 from app.models.tariff import Tariff
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.tariff_schema import TariffOut
+from app.schemas.tariff_schema import TariffOut, FlatTariffCreate
+from app.models.audit import AuditLog
 
 router = APIRouter(
     prefix="/tariffs",
     tags=["Tariffs"],
 )
+
+
+@router.post("", response_model=TariffOut, status_code=201,
+             summary="Admin đặt biểu phí đồng giá mới")
+def create_flat_tariff(payload: FlatTariffCreate, db: Session = Depends(get_db),
+                       current_user: User = Depends(require_role(UserRole.ADMIN))) -> TariffOut:
+    if not payload.name.strip():
+        raise HTTPException(400, "Tên biểu phí không được để trống.")
+    tariff = Tariff(name=payload.name.strip(), fee_type="FLAT",
+                    flat_rate=payload.flat_rate, hourly_rate=0,
+                    grace_period_mins=0, is_active=True,
+                    effective_from=payload.effective_from.replace(tzinfo=None))
+    db.add(tariff)
+    db.flush()
+    db.add(AuditLog(user_id=current_user.id, action="CREATE_FLAT_TARIFF",
+                    resource_type="tariffs", resource_id=str(tariff.id),
+                    details=f"{tariff.name}: {tariff.flat_rate} VND, từ {tariff.effective_from}"))
+    db.commit()
+    db.refresh(tariff)
+    return tariff
 
 
 @router.get(

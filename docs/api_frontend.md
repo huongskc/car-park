@@ -1,6 +1,6 @@
 # Tài liệu REST API Backend — Smart Parking IoT
 
-> Luồng nghiệp vụ và trạng thái phiên sau migration được mô tả trong
+> Luồng nghiệp vụ và trạng thái phiên được mô tả trong
 > [business_flow.md](business_flow.md).
 
 Tích hợp nhận diện biển số: xem [ALPR API](alpr_integration.md) để chụp và lấy
@@ -79,6 +79,25 @@ Authorization: Bearer <access_token>
 #### `PATCH /auth/me` — Cập nhật hồ sơ của chính mình
 - **Body**: `{"full_name":"Nguyễn Văn A","email":"a@example.com"}`. Có thể gửi một trong hai trường; email trùng tài khoản khác bị từ chối.
 - **Quyền**: Người dùng đã đăng nhập, không đổi vai trò hay tên đăng nhập.
+
+#### `POST /auth/me/change-password` — Đổi mật khẩu cá nhân
+- **Body**: `{"current_password":"...","new_password":"..."}`. Trả `204`, ghi audit. Đăng xuất trên web xóa token cục bộ.
+
+## Endpoint bổ sung cho demo hiện tại
+
+- `POST /sessions/{id}/confirm-entry` và `/confirm-exit`: Operator gửi
+  `{"confirmed_passage":true,"note":"..."}` sau khi nhìn thấy xe qua. ACK chỉ
+  đặt phiên vào `ENTRY_ACKED_WAITING_PASS` hoặc `EXIT_ACKED_WAITING_PASS`.
+- `POST /sessions/{id}/cancel-exit`: gửi `{"reason":"...","confirmed_not_exited":true}`;
+  phiên trở về `ACTIVE`, giữ payment đã thu.
+- `POST /alpr/capture`: gửi `{"lane":"IN","session_id":"SES_..."}` hoặc
+  `OUT`; backend kiểm tra bước của phiên, lưu ảnh và OCR gốc; AI service sở
+  hữu webcam, dashboard tải ảnh qua API với Bearer token.
+- `POST /tariffs`: Admin thêm biểu phí `FLAT` với `name`, `flat_rate`,
+  `effective_from`. Các phiên cũ vẫn giữ số tiền đã chốt.
+- `GET /payments?day=YYYY-MM-DD`: Operator xem giao dịch đã ghi để đối soát.
+- `POST /devices/{device_id}/commands`: Operator gửi `HOLD_OPEN`,
+  `RESUME_AUTO` với `gate_id` và `reason`; thao tác trực tiếp không đổi phiên.
 
 ---
 
@@ -261,9 +280,9 @@ trả chi tiết phiên. Các trạng thái mới là `ENTRY_PENDING`, `EXIT_REA
 | `POST /sessions/{id}/cancel-entry` | `{"reason":"Xe quay đầu","confirmed_departure":false}` | Hủy lượt vào đang chờ khi không còn lệnh `SENT`. Ô `OCCUPIED` cần `confirmed_departure=true` và vẫn chờ xác nhận trống trước khi cấp lại. |
 | `POST /sessions/{id}/cancel` | `{"reason":"Xe đã rời sau xác minh","confirmed_exit":true}` | Hủy ngoại lệ phiên `PENDING_REVIEW` chưa thanh toán; ô vẫn chờ cảm biến báo trống hoặc nhân viên cập nhật sau kiểm tra. |
 
-ACK cổng vào mới ghi `entry_time` và chuyển `ACTIVE`; ACK cổng ra mới ghi
-`exit_time` và chuyển `COMPLETED`. Cảm biến báo ô trống sau lượt ra mới cho
-cấp lại ô. Xem [business_flow.md](business_flow.md) để biết toàn bộ quy tắc.
+ACK cổng vào/ra chỉ chuyển sang trạng thái chờ xe qua. Operator xác nhận xe
+qua mới ghi `entry_time`/`exit_time` và chuyển `ACTIVE`/`COMPLETED`.
+Ô chỉ được cấp lại sau xác nhận trống. Xem [business_flow.md](business_flow.md).
 
 ---
 

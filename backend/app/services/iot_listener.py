@@ -1,7 +1,7 @@
 import logging
 import math
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -366,6 +366,9 @@ class IoTListener:
                 logger.info("[IoT Listener] Bỏ qua telemetry cũ cho ô '%s'", slot.id)
                 return
             previous_status = slot.status
+            stable = bool(latest and latest.is_occupied == is_occupied
+                          and float(latest.distance_cm) > 2.0
+                          and latest.sampled_at >= sampled_at - timedelta(seconds=30))
 
             # 1. Ghi log Telemetry vào bảng telemetry_logs
             telemetry_entry = TelemetryLog(
@@ -382,21 +385,25 @@ class IoTListener:
             # 2. Cập nhật trạng thái ô đỗ trong bảng slots
             if slot:
                 slot.last_distance_cm = distance_cm
+                slot.last_valid_sample_at = datetime.now()
                 slot.last_updated_at = func.now()
 
                 active_session = db.query(ParkingSession).filter(
                     ParkingSession.slot_id == slot.id,
                     ParkingSession.status.in_([
-                        SessionStatus.ENTRY_PENDING, SessionStatus.ACTIVE,
+                        SessionStatus.ENTRY_PENDING, SessionStatus.ENTRY_ACKED_WAITING_PASS,
+                        SessionStatus.ACTIVE,
                         SessionStatus.EXIT_READY, SessionStatus.PENDING_REVIEW,
-                        SessionStatus.PAID_WAITING_EXIT,
+                        SessionStatus.PAID_WAITING_EXIT, SessionStatus.EXIT_ACKED_WAITING_PASS,
                     ]),
                 ).with_for_update().first()
 
                 # Kiểm tra trạng thái bảo trì quản trị (Grill-Me đã chốt)
                 if active_session:
-                    if is_occupied:
+                    if stable and is_occupied:
                         slot.status = SlotStatus.OCCUPIED
+                    elif stable and not is_occupied:
+                        slot.status = SlotStatus.RESERVED
                     elif slot.status == SlotStatus.EMPTY:
                         slot.status = SlotStatus.RESERVED
                     if (not is_occupied and active_session.status == SessionStatus.ACTIVE
@@ -457,7 +464,7 @@ class IoTListener:
                     # Giữ nguyên trạng thái MAINTENANCE
                 else:
                     new_status = SlotStatus.OCCUPIED if is_occupied else SlotStatus.EMPTY
-                    if slot.status != new_status:
+                    if stable and slot.status != new_status:
                         logger.info(f"[IoT Listener] Ô đỗ '{slot.id}' đổi trạng thái: {slot.status.value} -> {new_status.value}")
                         slot.status = new_status
 
@@ -485,6 +492,29 @@ class IoTListener:
         except Exception as e:
             db.rollback()
             logger.error(f"[IoT Listener] Lỗi xử lý telemetry cho '{device_id}': {e}", exc_info=True)
+        finally:
+            db.close()
+
+    def expire_stale_slots(self, timeout_seconds: int = 30) -> int:
+        db = SessionLocal()
+        try:
+            stale = (db.query(Slot).filter(Slot.status != SlotStatus.MAINTENANCE,
+                                            Slot.status != SlotStatus.UNKNOWN,
+                                            (Slot.last_valid_sample_at.is_(None) |
+                                             (Slot.last_valid_sample_at < datetime.now() - timedelta(seconds=timeout_seconds))))
+                     .with_for_update().all())
+            for slot in stale:
+                slot.status = SlotStatus.UNKNOWN
+            db.commit()
+            for slot in stale:
+                websocket_manager.broadcast_sync("SLOT_STATUS_CHANGED", {
+                    "slot_id": slot.id, "status": SlotStatus.UNKNOWN.value,
+                })
+            return len(stale)
+        except Exception:
+            db.rollback()
+            logger.exception("Không thể đánh dấu ô thiếu telemetry")
+            return 0
         finally:
             db.close()
 
@@ -573,6 +603,8 @@ class IoTListener:
                         "severity": alert.severity.value,
                     })
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' không tồn tại trong hệ thống!")
+                from app.services.feedback_service import send_feedback
+                send_feedback(device, str(gate_id), "INVALID_CARD", payload.get("eventId"))
                 return
 
             if not card.is_active:
@@ -602,6 +634,8 @@ class IoTListener:
                         "severity": alert.severity.value,
                     })
                 logger.warning(f"[IoT Listener] Cảnh báo: Thẻ '{card_uid}' đã bị khóa nhưng vẫn quẹt qua cổng!")
+                from app.services.feedback_service import send_feedback
+                send_feedback(device, str(gate_id), "INVALID_CARD", payload.get("eventId"))
                 return
 
             logger.info(f"[IoT Listener] Thẻ hợp lệ: UID '{card_uid}' ({card.card_type.value}) tại cổng {gate_id}")

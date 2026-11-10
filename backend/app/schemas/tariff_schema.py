@@ -19,6 +19,12 @@ class TariffOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class FlatTariffCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    flat_rate: Decimal = Field(..., ge=0, le=99999999.99, decimal_places=2)
+    effective_from: datetime
+
+
 __all__ = [
     "TariffOut",
 ]

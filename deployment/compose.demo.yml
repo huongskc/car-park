@@ -1,0 +1,10 @@
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.22
+    container_name: smart-parking-demo-broker
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.demo.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./acl.conf:/mosquitto/config/acl.conf:ro
+      - ./mosquitto_passwd.demo:/mosquitto/config/passwd

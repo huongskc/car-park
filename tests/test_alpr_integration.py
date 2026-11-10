@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from app.config import settings
 from app.core.dependencies import get_current_user, get_db
-from app.models.enums import UserRole
+from app.models.enums import UserRole, SessionStatus
 from app.routers.alpr import router
 from app.schemas.alpr_schema import CaptureRequest
 from app.services.alpr_service import alpr_service
@@ -76,9 +76,20 @@ class ALPRIntegrationTests(unittest.TestCase):
         self.addCleanup(self.client_patch.stop)
         self.app = FastAPI()
         self.app.include_router(router, prefix="/api/v1")
-        self.app.dependency_overrides[get_db] = lambda: None
+        self.session = SimpleNamespace(id=42, status=SessionStatus.ENTRY_PENDING,
+                                       entry_ocr_plate=None, exit_ocr_plate=None,
+                                       exit_image_url=None)
+        self.fake_db = SimpleNamespace(
+            query=lambda _model: SimpleNamespace(
+                filter_by=lambda **_kw: SimpleNamespace(first=lambda: self.session)),
+            add=lambda _obj: None, commit=lambda: None,
+        )
+        self.app.dependency_overrides[get_db] = lambda: self.fake_db
         self.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(role=UserRole.OPERATOR)
         self.client = TestClient(self.app)
+        self.ocr_patch = patch("app.routers.alpr.record_entry_ocr")
+        self.ocr_patch.start()
+        self.addCleanup(self.ocr_patch.stop)
 
     def test_capture_contract_and_private_key(self):
         response = self.client.post("/api/v1/alpr/capture", json={"lane": "IN", "session_id": "42"})
@@ -94,7 +105,8 @@ class ALPRIntegrationTests(unittest.TestCase):
 
     def test_no_text_is_not_a_fake_plate(self):
         self.mode = "no_text"
-        result = self.client.post("/api/v1/alpr/capture", json={"lane": "OUT"})
+        self.session.status = SessionStatus.ACTIVE
+        result = self.client.post("/api/v1/alpr/capture", json={"lane": "OUT", "session_id": "42"})
         self.assertEqual(result.status_code, 200)
         self.assertIsNone(result.json()["plate_number"])
 
@@ -149,12 +161,12 @@ class ALPRIntegrationTests(unittest.TestCase):
                                ("bad_json", 502), ("mismatch", 502)]:
             with self.subTest(mode=mode):
                 self.mode = mode
-                result = self.client.post("/api/v1/alpr/capture", json={"lane": "IN"})
+                result = self.client.post("/api/v1/alpr/capture", json={"lane": "IN", "session_id": "42"})
                 self.assertEqual(result.status_code, expected)
 
     def test_access_and_validation(self):
         self.app.dependency_overrides.clear()
-        self.app.dependency_overrides[get_db] = lambda: None
+        self.app.dependency_overrides[get_db] = lambda: self.fake_db
         self.assertEqual(self.client.post("/api/v1/alpr/capture", json={"lane": "IN"}).status_code, 401)
         self.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(role=UserRole.VIEWER)
         self.assertEqual(self.client.post("/api/v1/alpr/capture", json={"lane": "IN"}).status_code, 403)

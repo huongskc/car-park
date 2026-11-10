@@ -7,7 +7,7 @@ from app.models.enums import GateId, CommandAction, CommandStatus
 class CommandSend(BaseModel):
     """Schema gửi lệnh điều khiển phần cứng Barrier và bo mạch ESP32."""
     gate_id: GateId = Field(..., description="Cổng kiểm soát mục tiêu (GATE_IN hoặc GATE_OUT)")
-    action: CommandAction = Field(..., description="Hành động điều khiển (OPEN, CLOSE, REBOOT, UPDATE_CONFIG)")
+    action: CommandAction = Field(..., description="Hành động điều khiển (OPEN, CLOSE, HOLD_OPEN, RESUME_AUTO, REBOOT, UPDATE_CONFIG)")
     reason: Optional[str] = Field(None, max_length=255, description="Lý do thực hiện lệnh (ví dụ: xe ưu tiên, quẹt thẻ lỗi)")
 
 

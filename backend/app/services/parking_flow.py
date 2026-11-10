@@ -2,7 +2,7 @@
 import logging
 import re
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -19,14 +19,16 @@ from app.models.payment import Payment
 from app.models.session import ParkingSession
 from app.models.slot import Slot
 from app.models.tariff import Tariff
+from app.models.telemetry import TelemetryLog
 from app.schemas.command_schema import CommandSend
 from app.services.command_service import command_service
 from app.services.websocket_manager import websocket_manager
 
 logger = logging.getLogger(__name__)
 OPEN_STATES = (
-    SessionStatus.ENTRY_PENDING, SessionStatus.ACTIVE, SessionStatus.EXIT_READY,
-    SessionStatus.PENDING_REVIEW, SessionStatus.PAID_WAITING_EXIT,
+    SessionStatus.ENTRY_PENDING, SessionStatus.ENTRY_ACKED_WAITING_PASS,
+    SessionStatus.ACTIVE, SessionStatus.EXIT_READY, SessionStatus.PENDING_REVIEW,
+    SessionStatus.PAID_WAITING_EXIT, SessionStatus.EXIT_ACKED_WAITING_PASS,
 )
 
 
@@ -107,6 +109,7 @@ def create_entry(db: Session, device_id: str, card_uid: str, plate: str | None,
         slot_id=slot.id, device_id=device_id, tariff_id=tariff.id,
         status=SessionStatus.ENTRY_PENDING, entry_time=None,
         entry_plate=plate.strip().upper() if normalized else None,
+        entry_ocr_plate=plate.strip().upper() if normalized and user is None else None,
         entry_image_url=image_url, fee_amount=fee, is_paid=False,
     )
     slot.status = SlotStatus.RESERVED
@@ -124,7 +127,7 @@ def create_entry(db: Session, device_id: str, card_uid: str, plate: str | None,
 
 
 def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
-                        note: str = "Nhân viên xác nhận") -> ParkingSession:
+                        note: str = "Nhân viên xác nhận", image_url: str | None = None) -> ParkingSession:
     obj = _session(db, session_id)
     if obj.status != SessionStatus.ENTRY_PENDING:
         raise HTTPException(409, "Lượt vào không còn chờ xác nhận.")
@@ -136,6 +139,8 @@ def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
         raise HTTPException(409, "Biển số khác biển đăng ký của thẻ tháng.")
     previous = obj.entry_plate
     obj.entry_plate = plate.strip().upper()
+    if image_url:
+        obj.entry_image_url = image_url
     _audit(db, "ENTRY_PLATE_CONFIRMED", obj, user,
            f"{previous or 'trống'} -> {obj.entry_plate}; {note}")
     db.commit()
@@ -148,14 +153,40 @@ def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
     return obj
 
 
+def record_entry_ocr(db: Session, session_id: int, plate: str | None,
+                     image_url: str | None, auto_confirm: bool) -> ParkingSession:
+    obj = _session(db, session_id)
+    if obj.status != SessionStatus.ENTRY_PENDING:
+        raise HTTPException(409, "Lượt vào không còn chờ nhận diện.")
+    obj.entry_ocr_plate = plate.strip().upper() if normalize_plate(plate) else None
+    obj.entry_image_url = image_url
+    db.commit()
+    if auto_confirm and obj.entry_ocr_plate:
+        try:
+            return confirm_entry_plate(db, obj.id, obj.entry_ocr_plate, note="OCR tự động")
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+    db.refresh(obj)
+    broadcast_session(obj)
+    return obj
+
+
 def prepare_exit(db: Session, session_id: int, plate: str | None,
-                 image_url: str | None = None, user=None) -> ParkingSession:
+                 image_url: str | None = None, user=None,
+                 needs_confirmation: bool = False,
+                 ocr_plate: str | None = None) -> ParkingSession:
     obj = _session(db, session_id)
     if obj.status != SessionStatus.ACTIVE:
         raise HTTPException(409, "Chỉ chuẩn bị lượt ra cho phiên đang gửi xe.")
     obj.exit_plate = plate.strip().upper() if normalize_plate(plate) else None
-    obj.exit_image_url = image_url
-    obj.status = (SessionStatus.EXIT_READY if normalize_plate(obj.entry_plate)
+    if user is None:
+        obj.exit_ocr_plate = ((ocr_plate or plate).strip().upper()
+                              if normalize_plate(ocr_plate or plate) else None)
+        obj.exit_image_url = image_url
+    elif image_url:
+        obj.exit_image_url = image_url
+    obj.status = (SessionStatus.EXIT_READY if not needs_confirmation and normalize_plate(obj.entry_plate)
                   and normalize_plate(obj.entry_plate) == normalize_plate(obj.exit_plate)
                   else SessionStatus.PENDING_REVIEW)
     alert = None
@@ -176,7 +207,7 @@ def prepare_exit(db: Session, session_id: int, plate: str | None,
         websocket_manager.broadcast_sync("NEW_ALERT", {
             "alert_id": alert.id, "message": alert.message, "severity": alert.severity.value,
         })
-    if obj.status == SessionStatus.EXIT_READY and float(obj.fee_amount) == 0:
+    if obj.status == SessionStatus.EXIT_READY and (obj.is_paid or float(obj.fee_amount) == 0):
         return checkout(db, obj.id, PaymentMethod.SYSTEM, user=None)
     return obj
 
@@ -206,7 +237,7 @@ def approve_exit(db: Session, session_id: int, approved: bool, note: str,
     db.commit()
     db.refresh(obj)
     broadcast_session(obj)
-    if approved and float(obj.fee_amount) == 0:
+    if approved and (obj.is_paid or float(obj.fee_amount) == 0):
         return checkout(db, obj.id, PaymentMethod.SYSTEM, user=None)
     return obj
 
@@ -215,17 +246,21 @@ def checkout(db: Session, session_id: int, method: PaymentMethod, user=None) -> 
     obj = _session(db, session_id)
     if obj.status != SessionStatus.EXIT_READY:
         raise HTTPException(409, "Phiên chưa sẵn sàng thu phí/ra cổng.")
-    if db.query(Payment.id).filter_by(session_id=obj.id).first():
-        raise HTTPException(409, "Phiên đã có thanh toán; không thu lần hai.")
-    if float(obj.fee_amount) > 0 and (user is None or method == PaymentMethod.SYSTEM):
-        raise HTTPException(400, "Cần nhân viên xác nhận thanh toán.")
-    db.add(Payment(session_id=obj.id, amount=obj.fee_amount, payment_method=method,
-                   payment_status=PaymentStatus.PAID,
-                   transaction_code=f"TXN_{secrets.token_hex(6).upper()}",
-                   operator_id=user.id if user else None))
-    obj.is_paid = True
+    existing_payment = db.query(Payment).filter_by(session_id=obj.id).first()
+    if existing_payment:
+        if not obj.is_paid or existing_payment.payment_status != PaymentStatus.PAID:
+            raise HTTPException(409, "Giao dịch cũ chưa được đối soát.")
+    else:
+        if float(obj.fee_amount) > 0 and (user is None or method == PaymentMethod.SYSTEM):
+            raise HTTPException(400, "Cần nhân viên xác nhận thanh toán.")
+        db.add(Payment(session_id=obj.id, amount=obj.fee_amount, payment_method=method,
+                       payment_status=PaymentStatus.PAID,
+                       transaction_code=f"TXN_{secrets.token_hex(6).upper()}",
+                       operator_id=user.id if user else None))
+        obj.is_paid = True
     obj.status = SessionStatus.PAID_WAITING_EXIT
-    _audit(db, "PAYMENT_CONFIRMED", obj, user, f"{method.value}: {obj.fee_amount}")
+    _audit(db, "PAYMENT_REUSED" if existing_payment else "PAYMENT_CONFIRMED",
+           obj, user, f"{method.value}: {obj.fee_amount}")
     db.commit()
     _send_gate(db, obj, GateId.GATE_OUT, user)
     db.refresh(obj)
@@ -258,13 +293,13 @@ def cancel_entry(db: Session, session_id: int, reason: str, user,
     if len(reason) < 3:
         raise HTTPException(400, "Cần nhập lý do hủy lượt vào.")
     obj = _session(db, session_id)
-    if obj.status != SessionStatus.ENTRY_PENDING:
+    if obj.status not in (SessionStatus.ENTRY_PENDING, SessionStatus.ENTRY_ACKED_WAITING_PASS):
         raise HTTPException(409, "Chỉ hủy lượt vào đang chờ.")
     if db.query(Command.id).filter_by(session_id=obj.id, gate_id=GateId.GATE_IN,
                                       status=CommandStatus.SENT).first():
         raise HTTPException(409, "Chờ lệnh cổng kết thúc trước khi hủy.")
     slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first()
-    if slot and slot.status == SlotStatus.OCCUPIED and not confirmed_departure:
+    if slot and slot.status in (SlotStatus.OCCUPIED, SlotStatus.UNKNOWN) and not confirmed_departure:
         raise HTTPException(409, "Ô đang báo có xe; cần xác nhận xe đã rời trước khi hủy.")
     if slot and slot.status == SlotStatus.RESERVED:
         slot.status = SlotStatus.EMPTY
@@ -283,12 +318,57 @@ def on_gate_ack(db: Session, command: Command) -> ParkingSession | None:
         return
     obj = _session(db, command.session_id)
     if command.gate_id == GateId.GATE_IN and obj.status == SessionStatus.ENTRY_PENDING:
-        obj.status = SessionStatus.ACTIVE
-        obj.entry_time = datetime.now()
+        obj.status = SessionStatus.ENTRY_ACKED_WAITING_PASS
     elif command.gate_id == GateId.GATE_OUT and obj.status == SessionStatus.PAID_WAITING_EXIT:
-        obj.status = SessionStatus.COMPLETED
-        obj.exit_time = datetime.now()
+        obj.status = SessionStatus.EXIT_ACKED_WAITING_PASS
     else:
         return
-    _audit(db, "GATE_ACK_COMPLETED", obj, details=command.id)
+    _audit(db, "GATE_ACK_WAITING_PASS", obj, details=command.id)
+    return obj
+
+
+def confirm_passage(db: Session, session_id: int, gate: GateId, user,
+                    note: str | None = None) -> ParkingSession:
+    obj = _session(db, session_id)
+    expected = (SessionStatus.ENTRY_ACKED_WAITING_PASS if gate == GateId.GATE_IN
+                else SessionStatus.EXIT_ACKED_WAITING_PASS)
+    if obj.status != expected:
+        raise HTTPException(409, "Phiên chưa nhận ACK mở cổng để xác nhận xe qua.")
+    if gate == GateId.GATE_IN:
+        obj.status = SessionStatus.ACTIVE
+        obj.entry_time = datetime.now()
+    else:
+        obj.status = SessionStatus.COMPLETED
+        obj.exit_time = datetime.now()
+        slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first()
+        latest = (db.query(TelemetryLog).filter_by(slot_id=obj.slot_id)
+                  .order_by(TelemetryLog.id.desc()).first())
+        if (slot and slot.status == SlotStatus.RESERVED and latest and not latest.is_occupied and slot.last_valid_sample_at
+                and slot.last_valid_sample_at >= datetime.now() - timedelta(seconds=30)):
+            slot.status = SlotStatus.EMPTY
+        elif slot and slot.status == SlotStatus.EMPTY:
+            slot.status = SlotStatus.RESERVED
+    _audit(db, "ENTRY_PASS_CONFIRMED" if gate == GateId.GATE_IN else "EXIT_PASS_CONFIRMED",
+           obj, user, note or "Nhân viên xác nhận xe đã qua cổng")
+    db.commit()
+    db.refresh(obj)
+    broadcast_session(obj)
+    websocket_manager.broadcast_sync("CAR_ENTERED" if gate == GateId.GATE_IN else "CAR_EXITED",
+                                     {"session_id": obj.id, "slot_id": obj.slot_id})
+    return obj
+
+
+def cancel_exit(db: Session, session_id: int, reason: str, user) -> ParkingSession:
+    obj = _session(db, session_id)
+    if obj.status not in (SessionStatus.EXIT_READY, SessionStatus.PAID_WAITING_EXIT,
+                          SessionStatus.EXIT_ACKED_WAITING_PASS):
+        raise HTTPException(409, "Phiên không chờ ra cổng.")
+    if db.query(Command.id).filter_by(session_id=obj.id, gate_id=GateId.GATE_OUT,
+                                      action=CommandAction.OPEN, status=CommandStatus.SENT).first():
+        raise HTTPException(409, "Chờ lệnh cổng kết thúc trước khi hủy lượt ra.")
+    obj.status = SessionStatus.ACTIVE
+    _audit(db, "EXIT_CANCELLED", obj, user, reason.strip())
+    db.commit()
+    db.refresh(obj)
+    broadcast_session(obj)
     return obj

@@ -15,6 +15,7 @@ class SessionCreate(BaseModel):
 class EntryPlateConfirm(BaseModel):
     plate: str = Field(..., min_length=4, max_length=20)
     note: str = Field(..., min_length=1, max_length=255)
+    image_url: Optional[str] = Field(None, max_length=255)
 
 
 class ExitPrepare(BaseModel):
@@ -25,6 +26,16 @@ class ExitPrepare(BaseModel):
 class EntryCancel(BaseModel):
     reason: str = Field(..., min_length=3, max_length=255)
     confirmed_departure: bool = False
+
+
+class PassageConfirm(BaseModel):
+    confirmed_passage: bool = Field(..., description="Nhân viên xác nhận đã thấy xe qua cổng")
+    note: Optional[str] = Field(None, max_length=255)
+
+
+class ExitCancel(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=255)
+    confirmed_not_exited: bool = Field(...)
 
 
 class SessionResolvePlate(BaseModel):
@@ -56,9 +67,11 @@ class SessionOut(BaseModel):
     device_id: Optional[str] = None
     entry_time: Optional[datetime] = None
     entry_plate: Optional[str] = None
+    entry_ocr_plate: Optional[str] = None
     entry_image_url: Optional[str] = None
     exit_time: Optional[datetime] = None
     exit_plate: Optional[str] = None
+    exit_ocr_plate: Optional[str] = None
     exit_image_url: Optional[str] = None
     fee_amount: float
     is_paid: bool

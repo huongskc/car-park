@@ -1,11 +1,16 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Response, UploadFile
+from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
-from app.models.enums import UserRole
+from app.database import get_db
+from app.models.enums import UserRole, SessionStatus
+from app.models.session import ParkingSession
+from app.models.audit import AuditLog
 from app.schemas.alpr_schema import CaptureRequest, CaptureResult, IMAGE_ID_PATTERN
 from app.services.alpr_service import alpr_service
+from app.services.parking_flow import record_entry_ocr, normalize_plate
 
 
 router = APIRouter(
@@ -15,8 +20,26 @@ router = APIRouter(
 
 
 @router.post("/capture", response_model=CaptureResult)
-async def capture_plate(payload: CaptureRequest):
-    return await alpr_service.capture(payload)
+async def capture_plate(payload: CaptureRequest, db: Session = Depends(get_db)):
+    if not payload.session_id:
+        raise HTTPException(400, "Cần mã phiên để gắn ảnh chụp.")
+    obj = db.query(ParkingSession).filter_by(session_code=payload.session_id).first()
+    if not obj:
+        raise HTTPException(404, "Không tìm thấy phiên gửi xe.")
+    expected = SessionStatus.ENTRY_PENDING if payload.lane == "IN" else SessionStatus.ACTIVE
+    if obj.status != expected:
+        raise HTTPException(409, "Phiên không ở bước chụp ảnh của làn này.")
+    result = await alpr_service.capture(payload)
+    raw = result.plate_number or getattr(result, "suggested_plate", None)
+    if payload.lane == "IN":
+        record_entry_ocr(db, obj.id, raw, result.image_url, auto_confirm=False)
+    else:
+        obj.exit_ocr_plate = raw.strip().upper() if normalize_plate(raw) else None
+        obj.exit_image_url = result.image_url
+        db.add(AuditLog(action="EXIT_OCR_CAPTURED", resource_type="parking_sessions",
+                        resource_id=str(obj.id), details="Ảnh OCR từ camera làn ra"))
+        db.commit()
+    return result
 
 
 @router.post("/recognize", response_model=CaptureResult)
