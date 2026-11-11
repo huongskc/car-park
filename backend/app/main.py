@@ -13,6 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("smart_parking.main")
 
@@ -127,6 +128,11 @@ app.include_router(tariffs_router, prefix="/api/v1")
 app.include_router(payments_router, prefix="/api/v1")
 app.include_router(telemetry_router, prefix="/api/v1")
 app.include_router(websocket_router)
+
+FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
 
 
 @app.get(

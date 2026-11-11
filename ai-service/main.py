@@ -3,6 +3,7 @@ import re
 import sys
 import threading
 import time
+import logging
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,14 @@ from ultralytics import YOLO
 import numpy as np
 
 import cv2
+import torch
 from dotenv import load_dotenv
+
+# Limit PyTorch CPU threads so EasyOCR doesn't starve the webcam thread and web server
+try:
+    torch.set_num_threads(max(1, min(4, (os.cpu_count() or 2) // 2 or 2)))
+except Exception:
+    pass
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from PIL import Image, UnidentifiedImageError
@@ -35,6 +43,7 @@ IMAGE_DIR = BASE_DIR / 'images'
 IMAGE_DIR.mkdir(exist_ok=True)
 MAX_STORED_IMAGES = int(os.getenv('MAX_STORED_IMAGES', '500'))
 CAMERA_LOCK = threading.Lock()
+OCR_LOCK = threading.Lock()
 _ACTIVE_RECOGNIZE_WORKERS = 0
 
 class CaptureRequest(BaseModel):
@@ -67,8 +76,10 @@ class LiveCamera:
     def __init__(self):
         self._frame = None
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._stop = threading.Event()
         self._thread = None
+        self._frame_seq = 0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -79,16 +90,27 @@ class LiveCamera:
 
     def stop(self):
         self._stop.set()
+        with self._cond:
+            self._cond.notify_all()
         if self._thread:
             self._thread.join(timeout=2)
 
     def _open(self):
-        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(CAMERA_INDEX)
+        # On Windows, use DirectShow (CAP_DSHOW) for instant webcam opening and low latency
+        if sys.platform == "win32":
+            cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(CAMERA_INDEX)
+        else:
+            cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(CAMERA_INDEX)
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         return cap
 
     def _loop(self):
@@ -97,18 +119,20 @@ class LiveCamera:
             if cap is None or not cap.isOpened():
                 cap = self._open()
                 if not cap.isOpened():
-                    cap.release()
                     cap = None
-                    time.sleep(1)
+                    time.sleep(0.5)
                     continue
             ok, frame = cap.read()
             if not ok or frame is None:
-                cap.release()
+                if cap is not None:
+                    cap.release()
                 cap = None
-                time.sleep(0.3)
+                time.sleep(0.2)
                 continue
-            with self._lock:
+            with self._cond:
                 self._frame = frame
+                self._frame_seq += 1
+                self._cond.notify_all()
         if cap is not None:
             cap.release()
 
@@ -118,13 +142,40 @@ class LiveCamera:
                 return None
             return self._frame.copy()
 
+    def fresh_frame(self, skip_count: int = 2, timeout: float = 0.5):
+        """Wait for `skip_count` brand-new frames from the camera to flush hardware/driver buffers."""
+        with self._cond:
+            start_seq = self._frame_seq
+            target_seq = self._frame_seq + skip_count
+            start = time.time()
+            while self._frame_seq < target_seq and not self._stop.is_set():
+                remaining = timeout - (time.time() - start)
+                if remaining <= 0:
+                    break
+                self._cond.wait(timeout=remaining)
+            if self._frame is None or self._frame_seq == start_seq:
+                return None
+            return self._frame.copy()
+
 
 live_camera = LiveCamera()
+
+
+def _warmup_ocr():
+    try:
+        from ocr import _get_reader
+        reader = _get_reader()
+        dummy = np.zeros((64, 128, 3), dtype=np.uint8)
+        reader.readtext(dummy)
+        logging.info("[ALPR] EasyOCR warm-up completed successfully.")
+    except Exception as e:
+        logging.warning("[ALPR] OCR warm-up skipped: %s", e)
 
 
 @asynccontextmanager
 async def lifespan(_app):
     live_camera.start()
+    threading.Thread(target=_warmup_ocr, daemon=True).start()
     yield
     live_camera.stop()
 
@@ -132,8 +183,13 @@ async def lifespan(_app):
 app = FastAPI(title='Smart Parking ALPR Edge Service', version='0.1.0', lifespan=lifespan)
 
 
-def snap():
-    frame = live_camera.frame()
+def snap(wait_fresh: bool = False):
+    if wait_fresh:
+        frame = live_camera.fresh_frame(skip_count=2, timeout=0.6)
+        if frame is None:
+            raise HTTPException(503, 'Webcam chưa có khung hình mới; vui lòng thử lại')
+    else:
+        frame = live_camera.frame()
     if frame is None:
         raise HTTPException(503, 'Không đọc được ảnh từ webcam')
     return frame
@@ -141,9 +197,9 @@ def snap():
 
 def jpeg_bytes(frame: np.ndarray) -> bytes:
     height, width = frame.shape[:2]
-    if width > 960:
-        frame = cv2.resize(frame, (960, max(1, int(height * 960 / width))))
-    ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    if width > 640:
+        frame = cv2.resize(frame, (640, max(1, int(height * 640 / width))))
+    ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
     if not ok:
         raise HTTPException(500, 'Không tạo được ảnh xem trước')
     return encoded.tobytes()
@@ -205,6 +261,25 @@ def detect_plate_bbox(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     return (x1, y1, x2, y2)
 
 
+def detect_displayed_plate(frame: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Find a two-line plate rectangle shown on a phone during the software demo."""
+    height, width = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.dilate(cv2.Canny(gray, 60, 150),
+                       cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        x, y, w, h = cv2.boundingRect(contour)
+        if (area >= 0.05 * width * height and x > 2 and y > 2
+                and x + w < width - 2 and y + h < height - 2
+                and 0.8 <= w / h <= 2.5 and area / (w * h) > 0.65
+                and len(cv2.approxPolyDP(contour, 0.03 * cv2.arcLength(contour, True), True)) == 4):
+            candidates.append((area, (x, y, x + w, y + h)))
+    return max(candidates, default=(0, None))[1]
+
+
 def _cleanup_old_images():
     if IMAGE_DIR != BASE_DIR / 'images' or MAX_STORED_IMAGES <= 0:
         return
@@ -234,49 +309,71 @@ def capture(req: CaptureRequest):
     if not CAMERA_LOCK.acquire(blocking=False):
         raise HTTPException(409, 'Camera đang xử lý yêu cầu khác')
     try:
-        return process_frame(req, snap())
+        # Snap a fresh frame that arrived AFTER the capture request was triggered!
+        frame = snap(wait_fresh=True)
     finally:
         CAMERA_LOCK.release()
+    return process_frame(req, frame)
 
 
-def process_frame(req: CaptureRequest, frame: np.ndarray):
-    # Restrict detection to the selected lane before searching for a plate.
-    lane_frame = roi_for(req.lane, frame)
-    if not lane_frame.size:
-        raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
-    bbox = detect_plate_bbox(lane_frame)
-    if plate_detector is not None and hasattr(plate_detector, 'detect'):
-        raw_boxes = [d['bbox'] for d in getattr(plate_detector, '_last_detections', [])]
-        if not raw_boxes and bbox:
-            raw_boxes = [list(bbox)]
-        if len(raw_boxes) >= 2:
-            b1, b2 = raw_boxes[0], raw_boxes[1]
-            if abs(b1[1] - b2[1]) < 50:
-                merged = [min(b1[0], b2[0]), min(b1[1], b2[1]), max(b1[2], b2[2]), max(b1[3], b2[3])]
-                raw_boxes.insert(0, merged)
-        best_crop, result, _, _ = recognize_frame(
-            lane_frame,
-            raw_boxes,
-            recognize_plate,
-            fallback=None,
-            pad=YOLO_PAD,
-        )
-        crop = best_crop if (best_crop is not None and best_crop.size) else (lane_frame[bbox[1]:bbox[3], bbox[0]:bbox[2]] if bbox else lane_frame)
-    else:
-        crop = lane_frame[bbox[1]:bbox[3], bbox[0]:bbox[2]] if bbox else lane_frame
-        result = recognize_plate(crop)
-    if not result.get('plate_number') and crop is not lane_frame:
-        full = recognize_plate(lane_frame)
-        if full.get('plate_number'):
-            result, crop = full, lane_frame
+@app.post('/snapshot', dependencies=[Depends(authenticate)])
+def snapshot(req: CaptureRequest):
+    """Return the exact saved frame before OCR starts."""
+    if not CAMERA_LOCK.acquire(blocking=False):
+        raise HTTPException(409, 'Camera đang xử lý yêu cầu khác')
+    try:
+        lane_frame = roi_for(req.lane, snap(wait_fresh=True))
+        if not lane_frame.size:
+            raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
+        filename = save_lane_image(req, lane_frame)
+    finally:
+        CAMERA_LOCK.release()
+    return Response((IMAGE_DIR / filename).read_bytes(), media_type='image/jpeg',
+                    headers={'X-Image-Id': filename, 'Cache-Control': 'no-store'})
+
+
+def save_lane_image(req: CaptureRequest, lane_frame: np.ndarray) -> str:
     filename = f'{req.request_id}_{uuid4().hex[:8]}.jpg'
-    if not cv2.imwrite(str(IMAGE_DIR / filename), crop):
+    if not cv2.imwrite(str(IMAGE_DIR / filename), lane_frame):
         raise HTTPException(500, 'Không lưu được ảnh')
     _cleanup_old_images()
-    plate = result.get('plate_number')
+    return filename
+
+
+def process_frame(req: CaptureRequest, frame: np.ndarray, already_cropped: bool = False):
+    # Snapshot JPEG already contains one lane ROI; never crop it a second time.
+    lane_frame = frame if already_cropped else roi_for(req.lane, frame)
+    if not lane_frame.size:
+        raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
+
+    # Always save the full lane frame so the evidence image is clear and matches preview
+    filename = save_lane_image(req, lane_frame)
+
+    # Read a detected plate crop; full-lane EasyOCR can exceed the backend timeout.
+    best_result = {}
+    bbox = detect_displayed_plate(lane_frame)
+    if bbox is not None:
+        x1, y1, x2, y2 = bbox
+        best_result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate')
+    if not best_result.get('plate_number'):
+        bbox = detect_plate_bbox(lane_frame)
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate')
+            if result.get('plate_number') or not best_result:
+                best_result = result
+
+    plate = best_result.get('plate_number') or best_result.get('suggested_plate')
+    conf = best_result.get('confidence')
+    needs_confirm = best_result.get('needs_confirmation', not bool(plate))
+    if conf and conf >= 0.85 and bool(best_result.get('plate_number')):
+        needs_confirm = False
+
     return {
-        **result,
-        'needs_confirmation': not bool(plate),
+        **best_result,
+        'plate_number': plate,
+        'suggested_plate': plate,
+        'needs_confirmation': needs_confirm,
         'request_id': req.request_id,
         'session_id': req.session_id,
         'lane': req.lane,
@@ -309,6 +406,7 @@ def recognize_camera_frame(
     lane: Literal['IN', 'OUT'] = Form(),
     image: UploadFile = File(),
     session_id: str | None = Form(default=None, max_length=64),
+    image_is_lane_crop: bool = Form(default=False),
 ):
     """Accept a lane's live browser frame; never acquire a physical camera here."""
     try:
@@ -320,7 +418,7 @@ def recognize_camera_frame(
     if len(content) > 4 * 1024 * 1024:
         raise HTTPException(413, 'Ảnh không được lớn hơn 4 MB')
     global _ACTIVE_RECOGNIZE_WORKERS
-    acquired = CAMERA_LOCK.acquire(timeout=30.0)
+    acquired = OCR_LOCK.acquire(timeout=30.0)
     if not acquired:
         raise HTTPException(409, 'Bộ nhận diện đang xử lý yêu cầu khác')
     _ACTIVE_RECOGNIZE_WORKERS += 1
@@ -328,10 +426,11 @@ def recognize_camera_frame(
         return process_frame(
             CaptureRequest(request_id=request_id, lane=lane, session_id=session_id),
             decode_frame(content),
+            already_cropped=image_is_lane_crop,
         )
     finally:
         _ACTIVE_RECOGNIZE_WORKERS -= 1
-        CAMERA_LOCK.release()
+        OCR_LOCK.release()
 
 
 @app.get('/images/{image_id}', dependencies=[Depends(authenticate)])

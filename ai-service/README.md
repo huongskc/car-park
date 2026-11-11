@@ -54,7 +54,10 @@ Sao chép `.env.example` thành `.env` và đặt `ALPR_API_KEY` hợp lệ trư
 .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
-Có `/health`, `POST /capture`, `POST /recognize` và `GET /images/{image_id}`.
+Có `/health`, `POST /snapshot`, `POST /recognize`, `POST /capture` (tương thích cũ)
+và `GET /images/{image_id}`. `/snapshot` trả JPEG cùng header `X-Image-Id`
+ngay sau khi chụp; backend lưu ảnh trước rồi gửi chính JPEG đó tới `/recognize`
+với `image_is_lane_crop=true` vì ảnh đã được cắt ROI.
 Các endpoint nhận diện và ảnh cần header `X-API-Key`. Luồng dashboard thật
 gọi backend `/alpr/capture`, AI service chụp từ một webcam và chọn ROI theo
 làn; RFID cũng gọi đường này qua backend. `/recognize` được giữ cho tích hợp

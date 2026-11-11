@@ -18,16 +18,20 @@ from app.models.enums import (
     AlertType, CommandStatus, DeviceStatus, GateId, PaymentMethod, SessionStatus, SlotStatus,
 )
 from app.models.payment import Payment
+from app.models.session import ParkingSession
 from app.models.slot import Slot
 from app.models.telemetry import TelemetryLog
 from app.services.command_service import command_service
+from app.services.alpr_service import alpr_service
 from app.services.iot_listener import iot_listener
 from app.services.mqtt_service import mqtt_service
+from app.services.parking_engine import parking_engine
 from app.services.websocket_manager import websocket_manager
 from app.services.parking_flow import (
     approve_exit, cancel_entry, checkout, confirm_entry_plate, create_entry,
     prepare_exit, retry_gate, confirm_passage, cancel_exit, record_entry_ocr,
 )
+from app.schemas.alpr_schema import CaptureResult
 
 
 @pytest.fixture
@@ -478,8 +482,7 @@ def test_cancel_exit_after_payment_reuses_single_payment(db):
 
 def test_uncertain_ocr_stays_pending_and_preserves_raw_plate(db):
     obj = create_entry(db, "ESP32_GATE_01", "E5F6G7H8", None)
-    record_entry_ocr(db, obj.id, "30A-999.88", "/api/v1/alpr/images/demo_12345678.jpg",
-                     auto_confirm=False)
+    record_entry_ocr(db, obj.id, "30A-999.88", "/api/v1/alpr/images/demo_12345678.jpg")
     assert obj.entry_ocr_plate == "30A-999.88"
     assert obj.entry_plate is None
     assert db.query(Command).filter_by(session_id=obj.id).count() == 0
@@ -487,6 +490,123 @@ def test_uncertain_ocr_stays_pending_and_preserves_raw_plate(db):
                         SimpleNamespace(id=2, username="operator",
                                         role=SimpleNamespace(value="OPERATOR")), "Ảnh rõ")
     assert obj.entry_plate == "30A-999.88"
+
+
+def test_confident_rfid_ocr_still_needs_operator_and_matching_exit_has_no_mismatch_alert(db, monkeypatch):
+    result = SimpleNamespace(status="success", plate_number="30A12345",
+                             suggested_plate=None, needs_confirmation=False,
+                             image_url="/api/v1/alpr/images/demo_12345678.jpg", image_id="demo_12345678.jpg")
+
+    async def snapshot(payload):
+        if payload.lane == "IN":
+            pending = db.query(ParkingSession).filter_by(session_code=payload.session_id).one()
+            assert pending.status == SessionStatus.ENTRY_PENDING
+            assert db.query(Slot).filter_by(id=pending.slot_id).one().status == SlotStatus.RESERVED
+        return "/api/v1/alpr/images/demo_12345678.jpg", b"\xff\xd8\xff\xd9"
+
+    async def recognize(payload, content, content_type, lane_crop=False):
+        assert lane_crop
+        pending = db.query(ParkingSession).filter_by(session_code=payload.session_id).one()
+        assert (pending.entry_image_url if payload.lane == "IN" else pending.exit_image_url) == "/api/v1/alpr/images/demo_12345678.jpg"
+        return result
+
+    monkeypatch.setattr(alpr_service, "snapshot", snapshot)
+    monkeypatch.setattr(alpr_service, "recognize", recognize)
+    obj = parking_engine.process_rfid_event("ESP32_GATE_01",
+                                            {"cardUid": "A1B2C3D4", "gate": "GATE_IN"}, db)
+    assert obj.status == SessionStatus.ENTRY_PENDING
+    assert obj.entry_ocr_plate == "30A12345" and obj.entry_plate is None
+    assert db.query(Command).filter_by(session_id=obj.id).count() == 0
+
+    operator = SimpleNamespace(id=2, username="operator", role=SimpleNamespace(value="OPERATOR"))
+    confirm_entry_plate(db, obj.id, "30A12345", operator, "Đã đối chiếu ảnh")
+    ack(db, obj.id, GateId.GATE_IN)
+    obj = parking_engine.process_rfid_event("ESP32_GATE_01",
+                                            {"cardUid": "A1B2C3D4", "gate": "GATE_OUT"}, db)
+    assert obj.status == SessionStatus.PENDING_REVIEW
+    assert obj.exit_ocr_plate == "30A12345"
+    assert db.query(Alert).filter_by(session_id=obj.id,
+                                     alert_type=AlertType.PLATE_MISMATCH).count() == 0
+    assert db.query(Payment).filter_by(session_id=obj.id).count() == 0
+    approve_exit(db, obj.id, True, "Nhân viên đã đối chiếu ảnh", "30A12345", operator)
+    assert obj.status == SessionStatus.EXIT_READY
+    checkout(db, obj.id, PaymentMethod.CASH, operator)
+    assert db.query(Payment).filter_by(session_id=obj.id).count() == 1
+
+
+def test_camera_capture_only_records_ocr_even_when_confident(db, monkeypatch):
+    async def snapshot(payload):
+        return "/api/v1/alpr/images/demo_12345678.jpg", b"\xff\xd8\xff\xd9"
+
+    async def recognize(payload, image, content_type, lane_crop=False):
+        assert lane_crop
+        from app.database import SessionLocal
+        with SessionLocal() as check_db:
+            current = check_db.query(ParkingSession).filter_by(session_code=payload.session_id).one()
+            assert (current.entry_image_url if payload.lane == "IN" else current.exit_image_url) == "/api/v1/alpr/images/demo_12345678.jpg"
+            assert (current.entry_ocr_plate if payload.lane == "IN" else current.exit_ocr_plate) is None
+        return CaptureResult(request_id="demo", session_id=payload.session_id,
+                             lane=payload.lane, status="success",
+                             image_id="demo_12345678.jpg", plate_number="30A12345",
+                             confidence=0.99, needs_confirmation=False,
+                             image_url="/api/v1/alpr/images/demo_12345678.jpg")
+
+    async def preview(_lane):
+        return b"\xff\xd8\xff\xd9"
+
+    monkeypatch.setattr(alpr_service, "snapshot", snapshot)
+    monkeypatch.setattr(alpr_service, "recognize", recognize)
+    monkeypatch.setattr(alpr_service, "preview", preview)
+    client = TestClient(app)
+    login = client.post("/api/v1/auth/login", json={"username": "operator", "password": "op123"})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/alpr/preview?lane=IN", headers=headers).status_code == 200
+    created = client.post("/api/v1/sessions", headers=headers,
+                          json={"device_id": "ESP32_GATE_01", "card_uid": "A1B2C3D4"})
+    item = created.json()
+    captured = client.post("/api/v1/alpr/capture", headers=headers,
+                           json={"lane": "IN", "session_id": item["session_code"]})
+    assert captured.status_code == 200, captured.text
+    db.expire_all()
+    obj = db.query(ParkingSession).filter_by(id=item["id"]).one()
+    assert obj.status == SessionStatus.ENTRY_PENDING
+    assert obj.entry_ocr_plate == "30A12345" and obj.entry_plate is None
+    assert db.query(Command).filter_by(session_id=obj.id).count() == 0
+
+    confirm_entry_plate(db, obj.id, "30A12345",
+                        SimpleNamespace(id=2, username="operator"), "Đã đối chiếu ảnh")
+    ack(db, obj.id, GateId.GATE_IN)
+    captured = client.post("/api/v1/alpr/capture", headers=headers,
+                           json={"lane": "OUT", "session_id": item["session_code"]})
+    assert captured.status_code == 200, captured.text
+    db.rollback()
+    assert obj.status == SessionStatus.ACTIVE
+    assert obj.exit_ocr_plate == "30A12345" and obj.exit_plate is None
+
+
+def test_camera_snapshot_remains_visible_when_ocr_fails(db, monkeypatch):
+    async def snapshot(_payload):
+        return "/api/v1/alpr/images/demo_12345678.jpg", b"\xff\xd8\xff\xd9"
+
+    async def recognize(_payload, _image, _content_type, lane_crop=False):
+        assert lane_crop
+        raise HTTPException(503, "OCR timeout")
+
+    monkeypatch.setattr(alpr_service, "snapshot", snapshot)
+    monkeypatch.setattr(alpr_service, "recognize", recognize)
+    client = TestClient(app)
+    login = client.post("/api/v1/auth/login", json={"username": "operator", "password": "op123"})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    created = client.post("/api/v1/sessions", headers=headers,
+                          json={"device_id": "ESP32_GATE_01", "card_uid": "A1B2C3D4"})
+    item = created.json()
+    captured = client.post("/api/v1/alpr/capture", headers=headers,
+                           json={"lane": "IN", "session_id": item["session_code"]})
+    assert captured.status_code == 503
+    db.rollback()
+    obj = db.query(ParkingSession).filter_by(id=item["id"]).one()
+    assert obj.entry_image_url == "/api/v1/alpr/images/demo_12345678.jpg"
+    assert obj.entry_ocr_plate is None
 
 
 def test_manual_exit_keeps_camera_ocr_separate_from_confirmed_plate(db):

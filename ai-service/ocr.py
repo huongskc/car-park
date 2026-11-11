@@ -315,24 +315,34 @@ def _recognize_easyocr(image, profile="vn"):
     reasons = []
     if not valid:
         reasons.append('unknown_layout' if winner else 'no_text')
-    if winner and min(line['confidence'] for line in lines) < .65:
+    if winner and min(line['confidence'] for line in lines) < .55:
         reasons.append('low_confidence')
     if winner and votes[winner['text']] < 2:
         reasons.append('preprocessing_disagreement')
     if winner and votes[winner['text']] >= 2 and trusted_votes.get(winner['text'], 0) < 2:
         reasons.append('insufficient_confident_agreement')
     accepted = valid and not reasons
+
+    # If valid format with good confidence, accept plate number
+    plate_val = None
+    if accepted:
+        plate_val = winner['text']
+    elif valid and winner and winner['confidence'] >= 0.55:
+        plate_val = winner['text']
+
+    needs_confirm = not (accepted and winner and winner['confidence'] >= 0.85)
+
     return {
-        'plate_number': winner['text'] if accepted else None,
+        'plate_number': plate_val,
         'suggested_plate': winner['text'] if winner else None,
-        'recognition_status': 'candidate' if accepted else 'uncertain',
+        'recognition_status': 'candidate' if accepted else ('suggested' if plate_val else 'uncertain'),
         'rejection_reasons': reasons,
         'confidence': round(winner['confidence'], 4) if winner else None,
         'raw_text': winner['raw_text'] if winner else '',
         'normalized_text': winner['text'] if winner else '',
         'lines': lines,
         'candidates': candidates,
-        'needs_confirmation': not accepted,
+        'needs_confirmation': needs_confirm,
         'valid_format': valid,
         'profile': profile,
         'observations': winner.get('observations', []) if winner else [],
@@ -443,12 +453,18 @@ def recognize_plate(image, profile="vn", engine=None):
     """Read pixels only. Ground-truth labels and filenames never enter this API."""
     if profile not in ('vn','generic'):
         raise ValueError('profile must be vn or generic')
-    engine=engine or os.getenv('OCR_ENGINE','auto')
+    engine = engine or os.getenv('OCR_ENGINE', 'easyocr')
     if engine not in ('auto','plate','easyocr'):
         raise ValueError('OCR_ENGINE must be auto, plate or easyocr')
-    if engine=='auto':
-        model,config=_plate_paths()
-        engine='plate' if model.is_file() and config.is_file() else 'easyocr'
+    if engine == 'auto':
+        h, w = image.shape[:2]
+        ratio = w / max(1, h)
+        if ratio < 2.5:
+            # 2-line square / motorbike plate -> use easyocr multi-line
+            engine = 'easyocr'
+        else:
+            model, config = _plate_paths()
+            engine = 'plate' if model.is_file() and config.is_file() else 'easyocr'
     if engine=='plate':
         res = _recognize_specialist(image, profile)
         pn = res.get('plate_number')

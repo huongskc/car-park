@@ -10,7 +10,7 @@ from app.models.session import ParkingSession
 from app.models.audit import AuditLog
 from app.schemas.alpr_schema import CaptureRequest, CaptureResult, IMAGE_ID_PATTERN
 from app.services.alpr_service import alpr_service
-from app.services.parking_flow import prepare_exit, record_entry_ocr, normalize_plate
+from app.services.parking_flow import broadcast_session, record_entry_ocr, normalize_plate
 
 
 router = APIRouter(
@@ -35,20 +35,30 @@ async def capture_plate(payload: CaptureRequest, db: Session = Depends(get_db)):
     expected = SessionStatus.ENTRY_PENDING if payload.lane == "IN" else SessionStatus.ACTIVE
     if obj.status != expected:
         raise HTTPException(409, "Phiên không ở bước chụp ảnh của làn này.")
-    result = await alpr_service.capture(payload)
-    raw = result.plate_number or getattr(result, "suggested_plate", None)
-    confident = result.status == "success" and not result.needs_confirmation and bool(result.plate_number)
+    image_url, image_bytes = await alpr_service.snapshot(payload)
     if payload.lane == "IN":
-        record_entry_ocr(db, obj.id, raw, result.image_url, auto_confirm=confident)
-    elif confident:
-        prepare_exit(db, obj.id, result.plate_number, result.image_url,
-                     needs_confirmation=False, ocr_plate=result.plate_number)
+        record_entry_ocr(db, obj.id, None, image_url)
     else:
+        obj.exit_ocr_plate = None
+        obj.exit_image_url = image_url
+        db.add(AuditLog(action="EXIT_IMAGE_CAPTURED", resource_type="parking_sessions",
+                        resource_id=str(obj.id), details="Ảnh chụp từ camera làn ra"))
+        db.commit()
+        broadcast_session(obj)
+    result = await alpr_service.recognize(payload, image_bytes, "image/jpeg", lane_crop=True)
+    result.image_url = image_url
+    result.image_id = image_url.rsplit("/", 1)[-1]
+    raw = result.plate_number or getattr(result, "suggested_plate", None)
+    db.refresh(obj)
+    if payload.lane == "IN":
+        if obj.status == SessionStatus.ENTRY_PENDING and obj.entry_image_url == image_url:
+            record_entry_ocr(db, obj.id, raw, image_url)
+    elif obj.status == SessionStatus.ACTIVE and obj.exit_image_url == image_url:
         obj.exit_ocr_plate = raw.strip().upper() if normalize_plate(raw) else None
-        obj.exit_image_url = result.image_url
         db.add(AuditLog(action="EXIT_OCR_CAPTURED", resource_type="parking_sessions",
                         resource_id=str(obj.id), details="Ảnh OCR từ camera làn ra"))
         db.commit()
+        broadcast_session(obj)
     return result
 
 

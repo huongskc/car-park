@@ -88,11 +88,10 @@ def create_entry(db: Session, device_id: str, card_uid: str, plate: str | None,
         ParkingSession.slot_id == Slot.id,
         ParkingSession.status.in_(OPEN_STATES),
     ).exists()
-    slot = (db.query(Slot).filter(Slot.site_id == device.site_id,
-                                  Slot.status == SlotStatus.EMPTY,
-                                  ~occupied_by_session)
-            .order_by(Slot.id).with_for_update(skip_locked=True).first())
-    if not slot:
+    has_empty = db.query(Slot.id).filter(Slot.site_id == device.site_id,
+                                         Slot.status == SlotStatus.EMPTY,
+                                         ~occupied_by_session).first()
+    if not has_empty:
         raise HTTPException(409, "Không còn ô trống khả dụng.")
     tariff = (db.query(Tariff).filter(Tariff.is_active.is_(True),
                                       Tariff.fee_type == "FLAT",
@@ -104,18 +103,28 @@ def create_entry(db: Session, device_id: str, card_uid: str, plate: str | None,
     if card.card_type == CardType.MONTHLY and not card.registered_plate:
         raise HTTPException(400, "Thẻ tháng thiếu biển đăng ký.")
     fee = 0 if _monthly_valid(card) else tariff.flat_rate
+
+    # Always reserve a slot immediately so lot capacity is guaranteed
+    slot = (db.query(Slot).filter(Slot.site_id == device.site_id,
+                                  Slot.status == SlotStatus.EMPTY,
+                                  ~occupied_by_session)
+            .order_by(Slot.id).with_for_update(skip_locked=True).first())
+    if not slot:
+        raise HTTPException(409, "Không còn ô trống khả dụng.")
+    slot_id = slot.id
+    slot.status = SlotStatus.RESERVED
+
     obj = ParkingSession(
         session_code=f"SES_{secrets.token_hex(5).upper()}", card_uid=card_uid,
-        slot_id=slot.id, device_id=device_id, tariff_id=tariff.id,
+        slot_id=slot_id, device_id=device_id, tariff_id=tariff.id,
         status=SessionStatus.ENTRY_PENDING, entry_time=None,
         entry_plate=plate.strip().upper() if normalized else None,
         entry_ocr_plate=plate.strip().upper() if normalized and user is None else None,
         entry_image_url=image_url, fee_amount=fee, is_paid=False,
     )
-    slot.status = SlotStatus.RESERVED
     db.add(obj)
     db.flush()
-    _audit(db, "ENTRY_CREATED", obj, user, f"Ô được cấp: {slot.id}")
+    _audit(db, "ENTRY_CREATED", obj, user, f"Ô được cấp: {slot.name}")
     db.commit()
     db.refresh(obj)
     if normalized and not (card.card_type == CardType.MONTHLY
@@ -141,8 +150,26 @@ def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
     obj.entry_plate = plate.strip().upper()
     if image_url:
         obj.entry_image_url = image_url
+
+    # Allocate and reserve a slot if not yet allocated
+    if obj.slot_id is None:
+        device = db.query(Device).filter_by(id=obj.device_id).first()
+        site_id = device.site_id if device else "PTIT_ZONE_1"
+        occupied_by_session = db.query(ParkingSession.id).filter(
+            ParkingSession.slot_id == Slot.id,
+            ParkingSession.status.in_(OPEN_STATES),
+        ).exists()
+        slot = (db.query(Slot).filter(Slot.site_id == site_id,
+                                      Slot.status == SlotStatus.EMPTY,
+                                      ~occupied_by_session)
+                .order_by(Slot.id).with_for_update(skip_locked=True).first())
+        if not slot:
+            raise HTTPException(409, "Không còn ô trống khả dụng.")
+        obj.slot_id = slot.id
+        slot.status = SlotStatus.RESERVED
+
     _audit(db, "ENTRY_PLATE_CONFIRMED", obj, user,
-           f"{previous or 'trống'} -> {obj.entry_plate}; {note}")
+           f"{previous or 'trống'} -> {obj.entry_plate}; Ô được cấp: {obj.slot_id}; {note}")
     db.commit()
     pending = db.query(Command).filter_by(session_id=obj.id, gate_id=GateId.GATE_IN,
                                             action=CommandAction.OPEN, status=CommandStatus.SENT).first()
@@ -154,19 +181,13 @@ def confirm_entry_plate(db: Session, session_id: int, plate: str, user=None,
 
 
 def record_entry_ocr(db: Session, session_id: int, plate: str | None,
-                     image_url: str | None, auto_confirm: bool) -> ParkingSession:
+                     image_url: str | None) -> ParkingSession:
     obj = _session(db, session_id)
     if obj.status != SessionStatus.ENTRY_PENDING:
         raise HTTPException(409, "Lượt vào không còn chờ nhận diện.")
     obj.entry_ocr_plate = plate.strip().upper() if normalize_plate(plate) else None
     obj.entry_image_url = image_url
     db.commit()
-    if auto_confirm and obj.entry_ocr_plate:
-        try:
-            return confirm_entry_plate(db, obj.id, obj.entry_ocr_plate, note="OCR tự động")
-        except HTTPException as exc:
-            if exc.status_code != 409:
-                raise
     db.refresh(obj)
     broadcast_session(obj)
     return obj
@@ -186,11 +207,12 @@ def prepare_exit(db: Session, session_id: int, plate: str | None,
         obj.exit_image_url = image_url
     elif image_url:
         obj.exit_image_url = image_url
-    obj.status = (SessionStatus.EXIT_READY if not needs_confirmation and normalize_plate(obj.entry_plate)
-                  and normalize_plate(obj.entry_plate) == normalize_plate(obj.exit_plate)
+    plate_matches = bool(normalize_plate(obj.entry_plate) and
+                         normalize_plate(obj.entry_plate) == normalize_plate(obj.exit_plate))
+    obj.status = (SessionStatus.EXIT_READY if not needs_confirmation and plate_matches
                   else SessionStatus.PENDING_REVIEW)
     alert = None
-    if obj.status == SessionStatus.PENDING_REVIEW:
+    if obj.status == SessionStatus.PENDING_REVIEW and not plate_matches:
         alert = Alert(
             alert_type=AlertType.PLATE_MISMATCH,
             severity=AlertSeverity.WARNING,
@@ -298,7 +320,7 @@ def cancel_entry(db: Session, session_id: int, reason: str, user,
     if db.query(Command.id).filter_by(session_id=obj.id, gate_id=GateId.GATE_IN,
                                       status=CommandStatus.SENT).first():
         raise HTTPException(409, "Chờ lệnh cổng kết thúc trước khi hủy.")
-    slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first()
+    slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first() if obj.slot_id else None
     if slot and slot.status in (SlotStatus.OCCUPIED, SlotStatus.UNKNOWN) and not confirmed_departure:
         raise HTTPException(409, "Ô đang báo có xe; cần xác nhận xe đã rời trước khi hủy.")
     if slot and slot.status == SlotStatus.RESERVED:
@@ -340,7 +362,7 @@ def confirm_passage(db: Session, session_id: int, gate: GateId, user,
     else:
         obj.status = SessionStatus.COMPLETED
         obj.exit_time = datetime.now()
-        slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first()
+        slot = db.query(Slot).filter_by(id=obj.slot_id).with_for_update().first() if obj.slot_id else None
         latest = (db.query(TelemetryLog).filter_by(slot_id=obj.slot_id)
                   .order_by(TelemetryLog.id.desc()).first())
         if (slot and slot.status == SlotStatus.RESERVED and latest and not latest.is_occupied and slot.last_valid_sample_at
