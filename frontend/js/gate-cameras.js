@@ -1,8 +1,8 @@
 'use strict';
-// AI service owns the webcam; each button requests one frame from its lane ROI.
+// AI service owns the webcam; live MJPEG stream + lane ALPR capture.
 window.GateCameras = (() => {
   const state = {IN:{}, OUT:{}};
-  let config = null, previewTimer = null;
+  let config = null;
   const panel = lane => document.getElementById('gate-camera-' + lane);
 
   function view(lane) {
@@ -76,7 +76,11 @@ window.GateCameras = (() => {
   }
 
   async function capture(lane) {
-    const s=state[lane], session=panel(lane).querySelector('[data-role="session"]').value.trim();
+    const s=state[lane];
+    if(s.busy)return;
+    const p=panel(lane);if(!p)return;
+    const sessionInput=p.querySelector('[data-role="session"]');
+    const session=sessionInput?sessionInput.value.trim():'';
     if(!session){s.message='Cần tạo phiên và nhập mã phiên trước.';paint(lane);return}
     if(s.status&&(lane==='IN'?s.status!=='ENTRY_PENDING':s.status!=='ACTIVE')){
       s.message='Phiên không còn chờ chụp ảnh ở làn này.';paint(lane);return;
@@ -89,7 +93,11 @@ window.GateCameras = (() => {
     try{
       const base=config.apiBase.replace(/\/$/,'');
       const auth='Bearer '+config.session.access_token;
-      const response=await fetch(base+'/alpr/capture',{method:'POST',headers:{Authorization:auth,'Content-Type':'application/json'},body:JSON.stringify({lane,session_id:session})});
+      const response=await fetch(base+'/alpr/capture',{
+        method:'POST',
+        headers:{Authorization:auth,'Content-Type':'application/json'},
+        body:JSON.stringify({lane, session_id: session})
+      });
       if(response.status===401){config.onUnauthorized?.();return}
       const result=await response.json();
       if(state[lane]!==s||s.captureSeq!==seq)return;
@@ -206,7 +214,6 @@ window.GateCameras = (() => {
   }
 
   function mount(options){
-    if(previewTimer)clearInterval(previewTimer);
     config=options;
     for(const lane of ['IN','OUT']){
       const p=panel(lane);if(!p)continue;
@@ -215,7 +222,7 @@ window.GateCameras = (() => {
       p.querySelector('[data-action="use"]').onclick=()=>config.onUsePlate?.(lane,state[lane].session,state[lane].result);
       p.querySelector('[data-role="session"]').oninput=()=>{clearCapture(lane);state[lane].message='Nhập mã phiên rồi chụp ảnh.';paint(lane)};
       paint(lane);
-      refreshPreview(lane);
+      startStream(lane);
     }
     previewTimer=setInterval(()=>{
       refreshPreview('IN');
@@ -224,13 +231,10 @@ window.GateCameras = (() => {
   }
 
   function unmount(){
-    if(previewTimer)clearInterval(previewTimer);
-    previewTimer=null;
     for(const lane of ['IN','OUT']){
       state[lane].captureSeq=(state[lane].captureSeq||0)+1;
       state[lane].imageSeq=(state[lane].imageSeq||0)+1;
       if(state[lane].image)URL.revokeObjectURL(state[lane].image);
-      if(state[lane].previewUrl)URL.revokeObjectURL(state[lane].previewUrl);
       state[lane]={};
     }
     config=null;

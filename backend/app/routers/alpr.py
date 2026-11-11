@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
@@ -23,6 +24,14 @@ router = APIRouter(
 async def preview_lane(lane: Literal["IN", "OUT"]):
     content = await alpr_service.preview(lane)
     return Response(content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/stream")
+async def stream_lane(lane: Literal["IN", "OUT"]):
+    return StreamingResponse(
+        alpr_service.stream(lane),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 @router.post("/capture", response_model=CaptureResult)
