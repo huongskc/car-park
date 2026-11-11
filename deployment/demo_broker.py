@@ -18,6 +18,7 @@ CONF = ROOT / "mosquitto.demo.conf"
 COMPOSE = ROOT / "compose.demo.yml"
 IMAGE = "eclipse-mosquitto:2.0.22"
 CONTAINER = "smart-parking-demo-broker"
+HOST_PORT = 1884
 
 
 def run(*args):
@@ -38,7 +39,7 @@ def check_denied(device, password):
     client = Client(CallbackAPIVersion.VERSION2, client_id="revoke_check_" + secrets.token_hex(4))
     client.username_pw_set(device, password)
     client.on_connect = lambda _c, _u, _f, reason, _p: (result.append(reason.value), event.set())
-    client.connect("127.0.0.1", 1883, 5)
+    client.connect("127.0.0.1", HOST_PORT, 5)
     client.loop_start()
     try:
         if not event.wait(8) or result[0] == 0:
@@ -81,7 +82,9 @@ def revoke(device):
     try:
         run("docker", "exec", CONTAINER, "mosquitto_passwd", "-D",
             "/mosquitto/config/passwd", device)
-        run("docker", "restart", CONTAINER)
+        # mosquitto_passwd replaces the bind-mounted file. Recreate the container
+        # so Docker mounts the new inode before checking the old credential.
+        run("docker", "compose", "-f", str(COMPOSE), "up", "-d", "--force-recreate", "broker")
         time.sleep(2)
         check_denied(device, password)
     except Exception:

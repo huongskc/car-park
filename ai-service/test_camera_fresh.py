@@ -9,6 +9,7 @@ import numpy as np
 
 import main
 from main import LiveCamera
+from ocr import recognize_plate
 
 
 class FreshFrameTest(unittest.TestCase):
@@ -53,6 +54,29 @@ class FreshFrameTest(unittest.TestCase):
             result = main.process_frame(request, frame, already_cropped=True)
             self.assertEqual(result['status'], 'no_text_detected')
             self.assertTrue((Path(directory) / result['image_id']).is_file())
+
+    def test_gate_ocr_skips_slow_fallback_and_second_detector_when_confident(self):
+        frame = np.full((40, 80, 3), 200, dtype=np.uint8)
+        request = main.CaptureRequest(request_id='fast_test', lane='IN', session_id='SES_1')
+        recognized = {'plate_number': '29Y303658', 'confidence': 0.99,
+                      'needs_confirmation': False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(main, 'IMAGE_DIR', Path(directory)), \
+                patch.object(main, 'detect_displayed_plate', return_value=(5, 5, 60, 35)), \
+                patch.object(main, 'detect_plate_bbox', side_effect=AssertionError('unneeded detector')), \
+                patch.object(main, 'recognize_plate', return_value=recognized) as ocr:
+            result = main.process_frame(request, frame, already_cropped=True)
+            self.assertEqual(result['plate_number'], '29Y303658')
+            self.assertFalse(ocr.call_args.kwargs['allow_heavy_fallback'])
+
+    def test_disabling_heavy_fallback_overrides_demo_config(self):
+        uncertain = {'plate_number': None, 'suggested_plate': None,
+                     'valid_format': False, 'confidence': 0.1}
+        with patch('ocr._recognize_specialist', return_value=uncertain), \
+                patch('ocr._recognize_easyocr', side_effect=AssertionError('slow fallback')):
+            result = recognize_plate(np.zeros((20, 40, 3), dtype=np.uint8),
+                                     engine='plate', allow_heavy_fallback=False)
+            self.assertIsNone(result['plate_number'])
 
 
 if __name__ == '__main__':

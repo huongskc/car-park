@@ -1,10 +1,8 @@
-import asyncio
 import os
 import re
 import sys
 import threading
 import time
-import logging
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -22,7 +20,7 @@ try:
 except Exception:
     pass
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -45,7 +43,6 @@ IMAGE_DIR.mkdir(exist_ok=True)
 MAX_STORED_IMAGES = int(os.getenv('MAX_STORED_IMAGES', '500'))
 CAMERA_LOCK = threading.Lock()
 OCR_LOCK = threading.Lock()
-_ACTIVE_RECOGNIZE_WORKERS = 0
 
 class CaptureRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=64, pattern=r'^[A-Za-z0-9_-]+$')
@@ -97,13 +94,17 @@ class LiveCamera:
             self._thread.join(timeout=2)
 
     def _open(self):
-        if sys.platform.startswith('win'):
+        # On Windows, use DirectShow (CAP_DSHOW) for instant webcam opening and low latency
+        if sys.platform == "win32":
             cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(CAMERA_INDEX)
         else:
             cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(CAMERA_INDEX)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(CAMERA_INDEX)
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -158,21 +159,9 @@ class LiveCamera:
 live_camera = LiveCamera()
 
 
-def _warmup_ocr():
-    try:
-        from ocr import _get_reader
-        reader = _get_reader()
-        dummy = np.zeros((64, 128, 3), dtype=np.uint8)
-        reader.readtext(dummy)
-        logging.info("[ALPR] EasyOCR warm-up completed successfully.")
-    except Exception as e:
-        logging.warning("[ALPR] OCR warm-up skipped: %s", e)
-
-
 @asynccontextmanager
 async def lifespan(_app):
     live_camera.start()
-    threading.Thread(target=_warmup_ocr, daemon=True).start()
     yield
     live_camera.stop()
 
@@ -301,37 +290,6 @@ def preview(lane: Literal['IN', 'OUT'] = Query()):
     return Response(jpeg_bytes(crop), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 
-async def mjpeg_stream_generator(lane: str, fps: int = 15):
-    delay = 1.0 / max(1, fps)
-    while True:
-        try:
-            frame = live_camera.frame()
-            if frame is not None:
-                crop = roi_for(lane, frame)
-                if crop.size:
-                    h, w = crop.shape[:2]
-                    if w > 640:
-                        crop = cv2.resize(crop, (640, max(1, int(h * 640 / w))))
-                    ok, encoded = cv2.imencode('.jpg', crop, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-                    if ok:
-                        data = encoded.tobytes()
-                        yield (
-                            b'--frame\r\n'
-                            b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n'
-                        )
-        except Exception:
-            pass
-        await asyncio.sleep(delay)
-
-
-@app.get('/stream', dependencies=[Depends(authenticate)])
-async def stream(lane: Literal['IN', 'OUT'] = Query()):
-    return StreamingResponse(
-        mjpeg_stream_generator(lane, fps=15),
-        media_type='multipart/x-mixed-replace; boundary=frame'
-    )
-
-
 @app.post('/capture', dependencies=[Depends(authenticate)])
 def capture(req: CaptureRequest):
     if not CAMERA_LOCK.acquire(blocking=False):
@@ -377,18 +335,21 @@ def process_frame(req: CaptureRequest, frame: np.ndarray, already_cropped: bool 
     # Always save the full lane frame so the evidence image is clear and matches preview
     filename = save_lane_image(req, lane_frame)
 
-    # Read a detected plate crop; full-lane EasyOCR can exceed the backend timeout.
+    # Keep gate OCR bounded; unclear plates remain for operator review.
     best_result = {}
     bbox = detect_displayed_plate(lane_frame)
     if bbox is not None:
         x1, y1, x2, y2 = bbox
-        best_result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate')
-    if not best_result.get('plate_number'):
-        bbox = detect_plate_bbox(lane_frame)
-        if bbox is not None:
-            x1, y1, x2, y2 = bbox
-            result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate')
-            if result.get('plate_number') or not best_result:
+        best_result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate',
+                                      allow_heavy_fallback=False)
+    if not best_result.get('plate_number') or best_result.get('needs_confirmation', True):
+        detected = detect_plate_bbox(lane_frame)
+        if detected is not None and detected != bbox:
+            x1, y1, x2, y2 = detected
+            result = recognize_plate(lane_frame[y1:y2, x1:x2], engine='plate',
+                                     allow_heavy_fallback=False)
+            if (bool(result.get('plate_number')), float(result.get('confidence') or 0)) > (
+                    bool(best_result.get('plate_number')), float(best_result.get('confidence') or 0)):
                 best_result = result
 
     plate = best_result.get('plate_number') or best_result.get('suggested_plate')
@@ -445,11 +406,9 @@ def recognize_camera_frame(
         image.file.close()
     if len(content) > 4 * 1024 * 1024:
         raise HTTPException(413, 'Ảnh không được lớn hơn 4 MB')
-    global _ACTIVE_RECOGNIZE_WORKERS
-    acquired = OCR_LOCK.acquire(timeout=30.0)
+    acquired = OCR_LOCK.acquire(timeout=3.0)
     if not acquired:
         raise HTTPException(409, 'Bộ nhận diện đang xử lý yêu cầu khác')
-    _ACTIVE_RECOGNIZE_WORKERS += 1
     try:
         return process_frame(
             CaptureRequest(request_id=request_id, lane=lane, session_id=session_id),
@@ -457,7 +416,6 @@ def recognize_camera_frame(
             already_cropped=image_is_lane_crop,
         )
     finally:
-        _ACTIVE_RECOGNIZE_WORKERS -= 1
         OCR_LOCK.release()
 
 

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     INTERNAL_ALPR_API_KEY: str = ""
     ALPR_SERVICE_URL: str = "http://127.0.0.1:8001"
-    ALPR_TIMEOUT_SEC: float = 60.0
+    ALPR_TIMEOUT_SEC: float = 12.0
     ENABLE_MOCK_ALPR: bool = False
 
     PARKING_FLAT_FEE: float = 20000.0

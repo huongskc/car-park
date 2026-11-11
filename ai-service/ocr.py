@@ -449,7 +449,7 @@ def _recognize_specialist(image, profile):
         'warning':'OCR confidence is not calibrated accuracy; compare with the original image.'}
 
 
-def recognize_plate(image, profile="vn", engine=None):
+def recognize_plate(image, profile="vn", engine=None, allow_heavy_fallback=None):
     """Read pixels only. Ground-truth labels and filenames never enter this API."""
     if profile not in ('vn','generic'):
         raise ValueError('profile must be vn or generic')
@@ -483,7 +483,8 @@ def recognize_plate(image, profile="vn", engine=None):
             return res
 
         # Heavy EasyOCR fallback (takes ~25s on CPU) only if explicitly enabled
-        enable_heavy_fallback = os.getenv('ENABLE_EASYOCR_FALLBACK', '0').strip().lower() in ('1', 'true', 'yes')
+        enable_heavy_fallback = (os.getenv('ENABLE_EASYOCR_FALLBACK', '0').strip().lower() in ('1', 'true', 'yes')
+                                 if allow_heavy_fallback is None else allow_heavy_fallback)
         if enable_heavy_fallback and (not pn or not valid or conf < 0.60):
             try:
                 easy = _recognize_easyocr(image, profile)

@@ -582,6 +582,14 @@ def test_camera_capture_only_records_ocr_even_when_confident(db, monkeypatch):
     db.rollback()
     assert obj.status == SessionStatus.ACTIVE
     assert obj.exit_ocr_plate == "30A12345" and obj.exit_plate is None
+    prepare_exit(db, obj.id, "30A12345", needs_confirmation=True, ocr_plate="30A12345")
+    captured = client.post("/api/v1/alpr/capture", headers=headers,
+                           json={"lane": "OUT", "session_id": item["session_code"]})
+    assert captured.status_code == 200, captured.text
+    db.expire_all()
+    obj = db.query(ParkingSession).filter_by(id=item["id"]).one()
+    assert obj.status == SessionStatus.PENDING_REVIEW
+    assert obj.exit_ocr_plate == "30A12345"
 
 
 def test_camera_snapshot_remains_visible_when_ocr_fails(db, monkeypatch):

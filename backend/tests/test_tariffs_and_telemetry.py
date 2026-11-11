@@ -30,6 +30,12 @@ def test_tariffs_unauthenticated(client):
     assert res.status_code == 401
 
 
+def test_bearer_token_in_query_is_not_accepted(client, auth_tokens):
+    token = auth_tokens["viewer"]["Authorization"].removeprefix("Bearer ")
+    res = client.get("/api/v1/tariffs", params={"token": token})
+    assert res.status_code == 401
+
+
 def test_tariffs_list_and_detail(client, auth_tokens):
     headers = auth_tokens["viewer"]
 

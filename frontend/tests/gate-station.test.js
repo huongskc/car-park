@@ -80,4 +80,65 @@ test('gate station confirms matching OCR in one action and requires a reason for
   await vm.runInContext('stationConfirm', context)(event);
   assert.equal(calls[5].path, '/sessions/7/prepare-exit');
   assert.equal(calls[5].options.body.exit_image_url, form.dataset.image);
+
+  vm.runInContext('imageCache.set("/photo.jpg", "blob:photo")', context);
+  const withPhoto = vm.runInContext('gateStation("IN", {id:7,session_code:"SES_7",card_uid:"CARD7",slot_id:"A1",status:"ENTRY_PENDING",entry_ocr_plate:"30A12345",entry_image_url:"/photo.jpg"}, null, {status:"RESERVED"}, null)', context);
+  assert.equal((withPhoto.match(/class="station-photo"/g) || []).length, 1);
+  assert.match(withPhoto, /class="station-body"/);
+});
+
+test('gate controls stay visible, require a reason, and hide successful ACK detail', async () => {
+  const calls = [];
+  const nodes = {'#app': {innerHTML: ''}, '#toast': {textContent: '', className: ''}, '#dev': {value: 'ESP32_GATE_01'}};
+  let reason = '';
+  const context = vm.createContext({
+    window: {addEventListener() {}},
+    document: {querySelector: key => nodes[key] || null, getElementById: () => null},
+    localStorage: {getItem: () => null},
+    location: {hash: '', origin: 'http://localhost:5500'},
+    setTimeout: () => 1, clearTimeout() {}, clearInterval() {},
+    prompt: () => reason, URL, console,
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8'), context);
+  const cameras = {view: lane => `<div>Camera ${lane}</div>`, setSession() {}, clearSession() {}};
+  context.window.GateCameras = context.GateCameras = cameras;
+  let commands = [{id:'CMD_1',gate_id:'GATE_IN',action:'OPEN',status:'ACKED',ack_reason:'DEMO command accepted'}];
+  context.api = async (url, options) => {
+    if (options) { calls.push({url, options}); return {id:'CMD_2'}; }
+    if (url==='/devices') return [{id:'ESP32_GATE_01',status:'ACTIVATED'}];
+    if (url.includes('/commands')) return commands;
+    if (url.startsWith('/sessions')) return [];
+    if (url==='/slots') return [];
+    throw new Error(url);
+  };
+  const page = await vm.runInContext('pGate()', context);
+  assert.doesNotMatch(page, /Cấp ô thủ công|Thao tác thủ công khi RFID|onsubmit="F\(event,'enter'\)"/);
+  const live = await vm.runInContext('gateLive()', context);
+  assert.match(live, /Mở chắn/);
+  assert.doesNotMatch(live, /<details>|DEMO command accepted|Tự đóng sau 30 giây/);
+  assert.throws(() => vm.runInContext('ACT.cmd("GATE_IN","OPEN")', context), /Cần nhập lý do/);
+  reason = 'Kiểm tra barie bị kẹt';
+  await vm.runInContext('ACT.cmd("GATE_IN","OPEN")', context);
+  assert.equal(calls[0].options.body.reason, reason);
+  commands = [{...commands[0],status:'FAILED',ack_reason:'Motor stuck'}];
+  assert.match(await vm.runInContext('gateLive()', context), /Motor stuck/);
+});
+
+test('legacy browser demo session returns to login', () => {
+  const removed = [];
+  const app = {innerHTML: ''};
+  const context = vm.createContext({
+    window: {addEventListener() {}},
+    document: {querySelector: key => key==='#app' ? app : null},
+    localStorage: {getItem: key => key==='sess' ? JSON.stringify({demo:true,role:'ADMIN'}) : null,
+                   removeItem: key => removed.push(key)},
+    location: {hash: '', origin: 'http://localhost:5500'},
+    clearInterval() {}, URL, console,
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8'), context);
+  assert(removed.includes('sess'));
+  assert.match(app.innerHTML, /Đăng nhập/);
+  assert.doesNotMatch(app.innerHTML, /Xem thử|demo\(/);
+  assert.equal(vm.runInContext('typeof demo', context), 'undefined');
+  assert.equal(vm.runInContext('typeof mock', context), 'undefined');
 });

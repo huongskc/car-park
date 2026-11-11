@@ -1,7 +1,6 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Response, UploadFile
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
@@ -26,14 +25,6 @@ async def preview_lane(lane: Literal["IN", "OUT"]):
     return Response(content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
-@router.get("/stream")
-async def stream_lane(lane: Literal["IN", "OUT"]):
-    return StreamingResponse(
-        alpr_service.stream(lane),
-        media_type="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
 @router.post("/capture", response_model=CaptureResult)
 async def capture_plate(payload: CaptureRequest, db: Session = Depends(get_db)):
     if not payload.session_id:
@@ -41,8 +32,9 @@ async def capture_plate(payload: CaptureRequest, db: Session = Depends(get_db)):
     obj = db.query(ParkingSession).filter_by(session_code=payload.session_id).first()
     if not obj:
         raise HTTPException(404, "Không tìm thấy phiên gửi xe.")
-    expected = SessionStatus.ENTRY_PENDING if payload.lane == "IN" else SessionStatus.ACTIVE
-    if obj.status != expected:
+    allowed = ({SessionStatus.ENTRY_PENDING} if payload.lane == "IN" else
+               {SessionStatus.ACTIVE, SessionStatus.PENDING_REVIEW})
+    if obj.status not in allowed:
         raise HTTPException(409, "Phiên không ở bước chụp ảnh của làn này.")
     image_url, image_bytes = await alpr_service.snapshot(payload)
     if payload.lane == "IN":
@@ -62,7 +54,7 @@ async def capture_plate(payload: CaptureRequest, db: Session = Depends(get_db)):
     if payload.lane == "IN":
         if obj.status == SessionStatus.ENTRY_PENDING and obj.entry_image_url == image_url:
             record_entry_ocr(db, obj.id, raw, image_url)
-    elif obj.status == SessionStatus.ACTIVE and obj.exit_image_url == image_url:
+    elif obj.status in allowed and obj.exit_image_url == image_url:
         obj.exit_ocr_plate = raw.strip().upper() if normalize_plate(raw) else None
         db.add(AuditLog(action="EXIT_OCR_CAPTURED", resource_type="parking_sessions",
                         resource_id=str(obj.id), details="Ảnh OCR từ camera làn ra"))

@@ -35,6 +35,8 @@ Script chỉ tái tạo `smart_parking_demo`, chạy broker `eclipse-mosquitto:2
 backend, ALPR mock, frontend và Chrome headless. Nó kiểm tra luồng MQTT thật,
 thu hồi credential demo và dừng các tiến trình sau khi chạy. File mật khẩu và
 log demo được Git bỏ qua. `smart_parking_db` không bị ghi.
+Broker Docker demo dùng cổng `1884` trên máy để không đụng broker phần cứng
+ở `1883`; topic và cổng `1883` trong container không đổi.
 
 Để dùng simulator tương tác, khởi động broker demo bằng
 `deployment/demo_broker.py setup` sau khi đặt `DEMO_BACKEND_MQTT_PASSWORD` và
@@ -45,6 +47,8 @@ Tài khoản MQTT của simulator có username trùng `SIM_DEVICE_ID`; mật kh�
 token trong payload. Sau khi API chuyển thiết bị sang `SUSPENDED` hoặc
 `DECOMMISSIONED`, đặt `DEMO_API_TOKEN` và chạy `deployment/demo_broker.py revoke`
 để thu hồi credential trên broker demo.
+Khi chạy thủ công với broker Docker demo, đặt `MQTT_BROKER_PORT=1884` cho
+backend và `SIM_MQTT_PORT=1884` cho simulator.
 
 1. Broker demo đã được lệnh `setup` khởi động theo `deployment/compose.demo.yml`.
 2. Chạy backend đã cấu hình `ALPR_SERVICE_URL=http://127.0.0.1:8001` và
@@ -62,12 +66,14 @@ token trong payload. Sau khi API chuyển thiết bị sang `SUSPENDED` hoặc
    $env:SIM_DEVICE_ID = 'ESP32_GATE_01'
    $env:SIM_DEVICE_TOKEN = '<auth_token trong DB của thiết bị demo>'
    $env:SIM_MQTT_PASSWORD = '<mật khẩu MQTT của thiết bị demo>'
+   $env:SIM_MQTT_PORT = '1884'
    .\backend\.venv\Scripts\python.exe simulator\device.py
    ```
 
-5. Gõ `empty` hai lần để xác nhận ô trống ban đầu, rồi `entry`. Sau ACK
-   cổng vào, Operator bấm **Đã thấy xe vào**. Gõ `occupied` hai lần, rồi
-   `exit`, xác nhận thu tiền trên dashboard, bấm **Đã thấy xe ra** sau ACK,
+5. Gõ `empty` hai lần để xác nhận ô trống ban đầu, rồi `entry`. Operator
+   xác nhận biển vào trên dashboard; sau ACK cổng vào, bấm **Đã thấy xe vào**.
+   Gõ `occupied` hai lần, rồi `exit`, xác nhận biển ra và thu tiền trên
+   dashboard, bấm **Đã thấy xe ra** sau ACK,
    và gõ `empty` hai lần. Lệnh `fail` khiến ACK kế tiếp là
    `FAILED`, dùng để thử `retry-gate`.
 

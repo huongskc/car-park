@@ -58,6 +58,10 @@ Có `/health`, `POST /snapshot`, `POST /recognize`, `POST /capture` (tương th�
 và `GET /images/{image_id}`. `/snapshot` trả JPEG cùng header `X-Image-Id`
 ngay sau khi chụp; backend lưu ảnh trước rồi gửi chính JPEG đó tới `/recognize`
 với `image_is_lane_crop=true` vì ảnh đã được cắt ROI.
+Luồng cổng dùng model biển số nhanh trên tối đa hai vùng ảnh; kết quả chưa rõ
+để nhân viên đối chiếu, không chạy EasyOCR dự phòng nhiều lần trong request.
+`OCR_ENGINE` và `ENABLE_EASYOCR_FALLBACK` vẫn áp dụng khi gọi trực tiếp
+`recognize_plate` hoặc dùng CLI OCR để đánh giá ảnh ngoài luồng cổng.
 Các endpoint nhận diện và ảnh cần header `X-API-Key`. Luồng dashboard thật
 gọi backend `/alpr/capture`, AI service chụp từ một webcam và chọn ROI theo
 làn; RFID cũng gọi đường này qua backend. `/recognize` được giữ cho tích hợp

@@ -92,12 +92,13 @@ def start(command, env, log_name):
     procs.append((proc, log))
 
 
-def browser_check(token, session_code, slot):
+def browser_check(token, session_code, slot, lane):
     chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
     if not chrome.is_file():
         raise RuntimeError("Chrome headless is required for dashboard acceptance on this host")
     with tempfile.TemporaryDirectory(prefix="smart_parking_browser_") as profile:
         browser = subprocess.Popen([str(chrome), "--headless=new", "--disable-gpu",
+                                    "--window-size=1366,768", "--force-device-scale-factor=1",
                                     "--no-first-run", "--remote-debugging-port=19223",
                                     "--remote-allow-origins=*", f"--user-data-dir={profile}",
                                     "http://127.0.0.1:5500/#/gate"],
@@ -135,14 +136,21 @@ def browser_check(token, session_code, slot):
                     print("Dashboard DOM:", ascii(evaluate("document.body.innerText.slice(0, 800)")))
                     raise
                 text = evaluate("document.querySelector('#live')?.innerText")
-                assert slot in text and "Ô được cấp" in text
-                code = json.dumps(session_code)
-                evaluate("document.querySelector('#gate-camera-OUT [data-role=session]').value=" +
-                         code + ";document.querySelector('#gate-camera-OUT [data-action=capture]').click()")
-                wait_for(lambda: evaluate("document.querySelector('#gate-camera-OUT [data-role=plate]')?.innerText === '30A12345'"),
-                         "browser capture through backend ROI_OUT")
-                wait_for(lambda: evaluate("document.querySelector('#gate-camera-OUT [data-role=image]')?.src.startsWith('blob:')"),
-                         "protected ALPR image in browser")
+                assert slot in text
+                station = "#gate-station-" + lane
+                camera = "#gate-camera-" + lane
+                wait_for(lambda: evaluate("document.querySelector('" + station + " .station-photo')?.src.startsWith('blob:')"),
+                         "protected image beside action")
+                assert evaluate("document.querySelectorAll('" + station + " .station-photo').length") == 1
+                assert evaluate("document.querySelector('" + camera + " [data-role=session]')?.innerText.includes(" + json.dumps(session_code) + ")")
+                assert evaluate("document.querySelector('" + station + " .station-form button')?.getBoundingClientRect().bottom <= 768")
+                call_id += 1
+                ws.send(json.dumps({"id": call_id, "method": "Emulation.setDeviceMetricsOverride",
+                                    "params": {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True}}))
+                while json.loads(ws.recv(timeout=8)).get("id") != call_id:
+                    pass
+                assert evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Narrow dashboard overflows horizontally"
+                assert evaluate("getComputedStyle(document.querySelector('.gate-stations')).gridTemplateColumns.split(' ').length === 1")
         finally:
             browser.terminate()
             try:
@@ -163,7 +171,7 @@ class Sim:
         self.client.username_pw_set(DEVICE, password)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
-        self.client.connect("127.0.0.1", 1883, 30)
+        self.client.connect("127.0.0.1", 1884, 30)
         self.client.loop_start()
         assert self.connected.wait(5), "Device simulator could not connect"
         self.publish("status", {"status": "online", "fwVersion": "demo-simulator"})
@@ -214,6 +222,7 @@ def main():
     env.update(DB_NAME=DB_NAME, DB_HOST=settings.DB_HOST,
                DB_PORT=str(settings.DB_PORT), DB_USER=settings.DB_USER,
                DB_PASSWORD=settings.DB_PASSWORD,
+               MQTT_BROKER_PORT="1884",
                MQTT_PASSWORD=backend_password, DEMO_BACKEND_MQTT_PASSWORD=backend_password,
                SIM_MQTT_PASSWORD=password, ALPR_API_KEY=key, INTERNAL_ALPR_API_KEY=key,
                DEBUG="false", ENABLE_MOCK_ALPR="true", ENTRY_GRACE_PERIOD_SEC="1")
@@ -259,14 +268,21 @@ def main():
         session = wait_for(lambda: next((s for s in request(BASE + "/sessions", token=operator)
                                          if s["card_uid"] == "A1B2C3D4"), None), "visitor entry")
         sid, slot = session["id"], session["slot_id"]
+        wait_for(lambda: request(BASE + f"/sessions/{sid}", token=operator)["entry_ocr_plate"] == "30A12345", "entry OCR")
+        browser_check(operator, session["session_code"], slot, "IN")
+        request(BASE + f"/sessions/{sid}/entry-plate", "PATCH",
+                {"plate": "30A12345", "note": "Đã đối chiếu ảnh"}, operator)
         wait_for(lambda: request(BASE + f"/sessions/{sid}", token=operator)["status"] == "ENTRY_ACKED_WAITING_PASS", "entry ACK")
         assert request(BASE + f"/sessions/{sid}", token=operator)["entry_time"] is None
         request(BASE + f"/sessions/{sid}/confirm-entry", "POST", {"confirmed_passage": True}, operator)
         sim.telemetry(slot, True)
         wait_for(lambda: request(BASE + "/slots", token=operator)[0]["status"] == "OCCUPIED", "occupied slot")
-        browser_check(operator, session["session_code"], slot)
-        print("PASS real dashboard: live session, allocated slot and protected ROI_OUT capture")
         sim.rfid("A1B2C3D4", "GATE_OUT")
+        wait_for(lambda: request(BASE + f"/sessions/{sid}", token=operator)["status"] == "PENDING_REVIEW", "exit OCR review")
+        browser_check(operator, session["session_code"], slot, "OUT")
+        print("PASS real dashboard: both RFID lanes auto-bind, show one protected image and visible actions")
+        request(BASE + f"/sessions/{sid}/resolve-plate", "PATCH",
+                {"approved": True, "actual_exit_plate": "30A12345", "note": "Đã đối chiếu ảnh"}, operator)
         wait_for(lambda: request(BASE + f"/sessions/{sid}", token=operator)["status"] == "EXIT_READY", "exit plate")
         request(BASE + f"/sessions/{sid}/checkout", "POST", {"payment_method": "CASH"}, operator)
         wait_for(lambda: request(BASE + f"/sessions/{sid}", token=operator)["status"] == "EXIT_ACKED_WAITING_PASS", "exit ACK")
@@ -283,6 +299,9 @@ def main():
         monthly = wait_for(lambda: next((s for s in request(BASE + "/sessions", token=operator)
                                          if s["card_uid"] == "E5F6G7H8"), None), "monthly entry")
         mid = monthly["id"]
+        wait_for(lambda: request(BASE + f"/sessions/{mid}", token=operator)["entry_ocr_plate"] == "30A99988", "monthly OCR")
+        request(BASE + f"/sessions/{mid}/entry-plate", "PATCH",
+                {"plate": "30A99988", "note": "Đã đối chiếu ảnh"}, operator)
         wait_for(lambda: request(BASE + f"/sessions/{mid}", token=operator)["status"] == "ENTRY_ACKED_WAITING_PASS", "monthly ACK")
         request(BASE + f"/sessions/{mid}/confirm-entry", "POST", {"confirmed_passage": True}, operator)
         sim.telemetry(slot, True)
@@ -303,12 +322,15 @@ def main():
         print("PASS monthly + mismatch review + free automatic exit")
 
         request(AI + "/scenario", "POST", {"entry_plate": "30A12345", "exit_plate": "30A12345"}, key=key)
-        sim.fail_next = True
         sim.rfid("A1B2C3D4", "GATE_IN")
         retry_session = wait_for(lambda: next((s for s in request(BASE + "/sessions", token=operator)
                                                if s["card_uid"] == "A1B2C3D4" and s["id"] != sid), None),
                                  "second visitor entry")
         rid = retry_session["id"]
+        wait_for(lambda: request(BASE + f"/sessions/{rid}", token=operator)["entry_ocr_plate"] == "30A12345", "retry entry OCR")
+        sim.fail_next = True
+        request(BASE + f"/sessions/{rid}/entry-plate", "PATCH",
+                {"plate": "30A12345", "note": "Đã đối chiếu ảnh"}, operator)
         wait_for(lambda: query("SELECT COUNT(*) FROM commands WHERE session_id=%s AND status='FAILED'", (rid,))[0][0],
                  "failed entry ACK")
         sim.telemetry(slot, False)
@@ -325,6 +347,9 @@ def main():
         sim.telemetry(slot, True)
         wait_for(lambda: query("SELECT status FROM slots WHERE id=%s", (slot,))[0][0] == "OCCUPIED", "occupied after retry")
         sim.rfid("A1B2C3D4", "GATE_OUT")
+        wait_for(lambda: request(BASE + f"/sessions/{rid}", token=operator)["status"] == "PENDING_REVIEW", "second exit OCR review")
+        request(BASE + f"/sessions/{rid}/resolve-plate", "PATCH",
+                {"approved": True, "actual_exit_plate": "30A12345", "note": "Đã đối chiếu ảnh"}, operator)
         wait_for(lambda: request(BASE + f"/sessions/{rid}", token=operator)["status"] == "EXIT_READY", "second exit")
         sim.fail_next = True
         request(BASE + f"/sessions/{rid}/checkout", "POST", {"payment_method": "CASH"}, operator)

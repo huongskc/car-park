@@ -25,6 +25,9 @@ URL JPEG và phát cập nhật dashboard ngay sau snapshot; sau đó gửi chí
 trước biển OCR, kể cả khi OCR chậm hoặc thất bại.
 Với JPEG lấy từ `/snapshot`, backend gửi `image_is_lane_crop=true` để
 AI không áp ROI lần thứ hai; ảnh tải lên từ nguồn khác giữ mặc định `false`.
+OCR trong luồng cổng chỉ chạy model nhanh trên vùng biển tìm được; nếu không
+đọc chắc chắn, nhân viên xác nhận từ ảnh. Backend giới hạn thời gian mỗi
+yêu cầu AI còn 12 giây để lượt xe không treo một phút.
 
 Trên dashboard thật, nhân viên tạo/chọn phiên, nhập mã phiên tại camera
 làn tương ứng và bấm **Chụp**. Trình duyệt gọi

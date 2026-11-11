@@ -95,3 +95,7 @@ deployment/acl.demo.conf
 
 # Local demo broker secrets are ignored; simulator source is versioned.
 deployment/mosquitto.demo.conf
+
+*.bat
+*.ps1
+.services.pids
