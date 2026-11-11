@@ -3,6 +3,28 @@
 Simulator chỉ dùng cho lab. `mock_alpr.py` trả biển số cấu hình sẵn và ảnh JPEG
 có chữ **DEMO - OCR MOCK, NOT CAMERA**; không nhận diện ảnh thật.
 
+## Điều khiển simulator bằng web với webcam thật
+
+`frontend/test_control.html` gọi `simulator/runner.py` ở `127.0.0.1:8008`.
+Script này gửi RFID và hai mẫu telemetry qua MQTT, nhận lệnh cổng rồi trả ACK;
+sau đó tiếp tục báo khoảng cách mỗi 5 giây để ô không bị chuyển `UNKNOWN`.
+Chạy backend và AI service thật trước, rồi trong PowerShell tại gốc repo:
+
+```powershell
+$cfg = @{}
+Get-Content .\firmware\secrets.env | ForEach-Object {
+  if ($_ -match '^([A-Z_]+)=(.*)$') { $cfg[$matches[1]] = $matches[2] }
+}
+$env:SIM_DEVICE_TOKEN = $cfg['AUTH_TOKEN']
+$env:SIM_MQTT_PASSWORD = $cfg['MQTT_PASSWORD']
+$env:SIM_MQTT_HOST = '127.0.0.1'
+.\backend\.venv\Scripts\python.exe .\simulator\runner.py
+```
+
+Mở `http://127.0.0.1:5500/test_control.html` cùng dashboard
+`http://127.0.0.1:5500/index.html`. Cả hai trang dùng backend/broker đang chạy;
+không cần board ESP32. Chỉ chạy một simulator cho `ESP32_GATE_01` tại một thời điểm.
+
 Chạy nghiệm thu tự động từ gốc repo (cần MySQL, Docker, Chrome và hai venv):
 
 ```powershell

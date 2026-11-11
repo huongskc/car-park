@@ -5,7 +5,7 @@ import secrets
 from threading import Lock
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, Field
@@ -54,9 +54,7 @@ def set_scenario(scenario: Scenario, x_api_key: str | None = Header(None)):
     return {"status": "demo scenario loaded"}
 
 
-@app.post("/capture")
-def capture(req: Capture, x_api_key: str | None = Header(None)):
-    authenticate(x_api_key)
+def create_demo_capture(req: Capture):
     if req.lane not in plates:
         raise HTTPException(422, "Invalid lane")
     with guard:
@@ -75,6 +73,28 @@ def capture(req: Capture, x_api_key: str | None = Header(None)):
             "lane": req.lane, "status": "success" if plate else "no_text_detected",
             "image_id": filename, "plate_number": plate, "confidence": None,
             "needs_confirmation": needs_confirmation, "recognition_status": "mock", "demo": True}
+
+
+@app.post("/capture")
+def capture(req: Capture, x_api_key: str | None = Header(None)):
+    authenticate(x_api_key)
+    return create_demo_capture(req)
+
+
+@app.post("/snapshot")
+def snapshot(req: Capture, x_api_key: str | None = Header(None)):
+    authenticate(x_api_key)
+    result = create_demo_capture(req)
+    return Response(images[result["image_id"]], media_type="image/jpeg",
+                    headers={"X-Image-Id": result["image_id"], "Cache-Control": "no-store"})
+
+
+@app.post("/recognize")
+def recognize(request_id: str = Form(), lane: str = Form(), image: UploadFile = File(),
+              session_id: str | None = Form(None), x_api_key: str | None = Header(None)):
+    authenticate(x_api_key)
+    image.file.close()
+    return create_demo_capture(Capture(request_id=request_id, lane=lane, session_id=session_id))
 
 
 @app.get("/images/{image_id}")

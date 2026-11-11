@@ -1,10 +1,11 @@
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::delay::{Ets, FreeRtos};
 use esp_idf_svc::hal::gpio::{Input, Output, PinDriver, Pull};
+use esp_idf_svc::hal::i2c::I2cDriver;
 use esp_idf_svc::hal::ledc::config::{Resolution, TimerConfig};
 use esp_idf_svc::hal::ledc::{LedcDriver, LedcTimerDriver};
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::spi::{SpiDeviceDriver, SpiDriver, config};
+use esp_idf_svc::hal::spi::{config, SpiDeviceDriver, SpiDriver};
 use esp_idf_svc::hal::units::FromValueType;
 use esp_idf_svc::mqtt::client::{
     EspMqttClient, EventPayload, LwtConfiguration, MqttClientConfiguration, MqttProtocolVersion,
@@ -13,13 +14,12 @@ use esp_idf_svc::mqtt::client::{
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys::EspError;
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
-use mfrc522::Mfrc522;
+use lcd_lcm1602_i2c::sync_lcd::Lcd;
 use mfrc522::comm::blocking::spi::SpiInterface;
+use mfrc522::Mfrc522;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use esp_idf_svc::hal::i2c::I2cDriver;
-use lcd_lcm1602_i2c::sync_lcd::Lcd;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASS: &str = env!("WIFI_PASS");
@@ -58,10 +58,14 @@ impl Default for ParkConfig {
 }
 
 fn field_f32(v: &serde_json::Value, key: &str, default: f32) -> f32 {
-    v.get(key).and_then(|x| x.as_f64()).unwrap_or(default as f64) as f32
+    v.get(key)
+        .and_then(|x| x.as_f64())
+        .unwrap_or(default as f64) as f32
 }
 fn field_u32(v: &serde_json::Value, key: &str, default: u32) -> u32 {
-    v.get(key).and_then(|x| x.as_u64()).unwrap_or(default as u64) as u32
+    v.get(key)
+        .and_then(|x| x.as_u64())
+        .unwrap_or(default as u64) as u32
 }
 fn parse_config(text: &str) -> Result<ParkConfig, serde_json::Error> {
     let v: serde_json::Value = serde_json::from_str(text)?;
@@ -70,7 +74,10 @@ fn parse_config(text: &str) -> Result<ParkConfig, serde_json::Error> {
         distance_threshold_cm: field_f32(&v, "distanceThresholdCm", 15.0),
         servo_open_time_sec: field_u32(&v, "servoOpenTimeSec", 10),
         heartbeat_interval_sec: field_u32(&v, "heartbeatIntervalSec", 10),
-        buzzer_enabled: v.get("buzzerEnabled").and_then(|x| x.as_bool()).unwrap_or(true),
+        buzzer_enabled: v
+            .get("buzzerEnabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true),
     })
 }
 
@@ -81,6 +88,15 @@ struct CommandMsg {
     #[serde(default)]
     gate: String,
     action: String,
+    #[serde(default)]
+    auto_close_ms: Option<u32>,
+}
+
+#[derive(Default)]
+struct GateState {
+    open: bool,
+    held: bool,
+    close_at: Option<i64>,
 }
 
 fn now_us() -> i64 {
@@ -106,7 +122,11 @@ fn measure_cm(trig: &mut PinDriver<'_, Output>, echo: &PinDriver<'_, Input>) -> 
         }
     }
     let cm = (now_us() - start) as f32 * 0.0343 / 2.0;
-    if cm <= 2.0 { None } else { Some(cm) }
+    if cm <= 2.0 {
+        None
+    } else {
+        Some(cm)
+    }
 }
 
 fn load_config(nvs: &EspNvs<esp_idf_svc::nvs::NvsDefault>) -> ParkConfig {
@@ -123,11 +143,7 @@ fn save_config(nvs: &EspNvs<esp_idf_svc::nvs::NvsDefault>, cfg: &ParkConfig) {
     }
 }
 
-fn paint<'a, 'd>(
-    lcd: &mut Option<Lcd<'a, I2cDriver<'d>, Ets>>,
-    line1: &str,
-    line2: &str,
-) {
+fn paint<'a, 'd>(lcd: &mut Option<Lcd<'a, I2cDriver<'d>, Ets>>, line1: &str, line2: &str) {
     let Some(screen) = lcd else { return };
     let top = format!("{line1:<16}");
     let bot = format!("{line2:<16}");
@@ -162,7 +178,9 @@ fn main() -> Result<(), EspError> {
 
     let timer = LedcTimerDriver::new(
         p.ledc.timer0,
-        &TimerConfig::new().frequency(50.Hz()).resolution(Resolution::Bits14),
+        &TimerConfig::new()
+            .frequency(50.Hz())
+            .resolution(Resolution::Bits14),
     )?;
     let mut gate_in = LedcDriver::new(p.ledc.channel0, &timer, p.pins.gpio25)?;
     let mut gate_out = LedcDriver::new(p.ledc.channel1, &timer, p.pins.gpio26)?;
@@ -187,7 +205,7 @@ fn main() -> Result<(), EspError> {
             println!("lcd loi {e:?}");
             None
         }
-    };    
+    };
 
     let mut rst_in = PinDriver::output(p.pins.gpio16)?;
     let mut rst_out = PinDriver::output(p.pins.gpio32)?;
@@ -197,7 +215,7 @@ fn main() -> Result<(), EspError> {
     rst_in.set_high()?;
     rst_out.set_high()?;
     FreeRtos::delay_ms(10);
-    
+
     let bus = SpiDriver::new(
         p.spi2,
         p.pins.gpio18,
@@ -208,7 +226,7 @@ fn main() -> Result<(), EspError> {
     let spi_cfg = config::Config::new().baudrate(1_u32.MHz().into());
     let dev_in = SpiDeviceDriver::new(&bus, Some(p.pins.gpio5), &spi_cfg)?;
     let dev_out = SpiDeviceDriver::new(&bus, Some(p.pins.gpio27), &spi_cfg)?;
-    
+
     let mut rfid_in = match Mfrc522::new(SpiInterface::new(dev_in)).init() {
         Ok(mut reader) => {
             println!("rfid vao {:02X}", reader.version().unwrap_or(0));
@@ -269,8 +287,8 @@ fn main() -> Result<(), EspError> {
     let flag = connected.clone();
     let inbox = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let inbox_cb = inbox.clone();
-    let mut client = EspMqttClient::new_cb(BROKER, &mqtt_conf, move |event| {
-        match event.payload() {
+    let mut client =
+        EspMqttClient::new_cb(BROKER, &mqtt_conf, move |event| match event.payload() {
             EventPayload::Connected(_) => {
                 println!("mqtt da noi");
                 flag.store(true, Ordering::SeqCst);
@@ -280,17 +298,19 @@ fn main() -> Result<(), EspError> {
                 let text = std::str::from_utf8(data).unwrap_or("");
                 println!("nhan {topic} {text}");
                 if topic.ends_with("/commands")
-                || topic.ends_with("/config")
-                || topic.ends_with("/feedback")
-            {
-                inbox_cb.lock().unwrap().push((topic.to_string(), text.to_string()));
-            }
+                    || topic.ends_with("/config")
+                    || topic.ends_with("/feedback")
+                {
+                    inbox_cb
+                        .lock()
+                        .unwrap()
+                        .push((topic.to_string(), text.to_string()));
+                }
             }
             EventPayload::Disconnected => println!("mqtt ngat"),
             EventPayload::Error(e) => println!("mqtt loi {e:?}"),
             _ => {}
-        }
-    })?;
+        })?;
 
     while !connected.load(Ordering::SeqCst) {
         FreeRtos::delay_ms(100);
@@ -307,14 +327,15 @@ fn main() -> Result<(), EspError> {
     let mut last_cm: Option<f32> = None;
     let mut last_uid = String::new();
     let mut last_uid_at = 0_i64;
-    let mut hold: Option<(String, i64)> = None;
+    let mut gate_in_state = GateState::default();
+    let mut gate_out_state = GateState::default();
     let mut buzzer_until: Option<i64> = None;
 
     let mut lcd_line1 = "READY".to_string();
     let mut lcd_line2 = "SAN SANG".to_string();
     let mut lcd_shown = String::new();
     let mut wait_until: Option<i64> = None;
-    let mut seen_cmds: Vec<String> = Vec::new();
+    let mut seen_cmds: Vec<(String, String)> = Vec::new();
 
     loop {
         let now = now_us();
@@ -322,16 +343,19 @@ fn main() -> Result<(), EspError> {
             buzzer.set_low()?;
             buzzer_until = None;
         }
-        if let Some((gate, until)) = hold.clone() {
-            if now >= until {
-                let servo = if gate == "GATE_OUT" { &mut gate_out } else { &mut gate_in };
-                servo.set_duty(duty_0)?;
-                println!("dong {gate}");
-                hold = None;
-                lcd_line1 = "READY".to_string();
-                lcd_line2 = "SAN SANG".to_string();
-                wait_until = None;
-            }
+        if gate_in_state.close_at.is_some_and(|until| now >= until) {
+            gate_in.set_duty(duty_0)?;
+            gate_in_state = GateState::default();
+            println!("dong GATE_IN");
+        }
+        if gate_out_state.close_at.is_some_and(|until| now >= until) {
+            gate_out.set_duty(duty_0)?;
+            gate_out_state = GateState::default();
+            println!("dong GATE_OUT");
+        }
+        if !gate_in_state.open && !gate_out_state.open && wait_until.is_none() {
+            lcd_line1 = "READY".to_string();
+            lcd_line2 = "SAN SANG".to_string();
         }
 
         let interval = cfg.heartbeat_interval_sec.max(1) as i64 * 1_000_000;
@@ -355,7 +379,9 @@ fn main() -> Result<(), EspError> {
         }
 
         for (reader, gate) in [(&mut rfid_in, "GATE_IN"), (&mut rfid_out, "GATE_OUT")] {
-            let Some(reader) = reader.as_mut() else { continue };
+            let Some(reader) = reader.as_mut() else {
+                continue;
+            };
             if let Ok(atqa) = reader.reqa() {
                 if let Ok(uid) = reader.select(&atqa) {
                     let text: String = uid.as_bytes().iter().map(|b| format!("{b:02X}")).collect();
@@ -410,37 +436,41 @@ fn main() -> Result<(), EspError> {
             let Ok(cmd) = serde_json::from_str::<CommandMsg>(&raw) else {
                 continue;
             };
-            let gate = if cmd.gate.is_empty() { "GATE_IN" } else { &cmd.gate };
+            let gate = if cmd.gate.is_empty() {
+                "GATE_IN"
+            } else {
+                &cmd.gate
+            };
 
-            if seen_cmds.iter().any(|id| id == &cmd.command_id) {
-                let body = format!(
-                    r#"{{"token":"{AUTH_TOKEN}","commandId":"{}","gate":"{gate}","status":"FAILED","reason":"commandId trung"}}"#,
-                    cmd.command_id
-                );
+            if let Some((_, body)) = seen_cmds.iter().find(|(id, _)| id == &cmd.command_id) {
                 client.publish(ACK_TOPIC, QoS::AtLeastOnce, false, body.as_bytes())?;
                 println!("bo qua lenh trung {}", cmd.command_id);
                 continue;
             }
-            if seen_cmds.len() == 8 {
-                seen_cmds.remove(0);
-            }
-            seen_cmds.push(cmd.command_id.clone());          
-
+            let valid_gate = gate == "GATE_IN" || gate == "GATE_OUT";
+            let state = if gate == "GATE_OUT" {
+                &mut gate_out_state
+            } else {
+                &mut gate_in_state
+            };
             let (status, reason) = match cmd.action.as_str() {
+                _ if !valid_gate => ("FAILED", "Gate khong hop le"),
                 "OPEN" => {
-                    if let Some((old, _)) = hold.clone() {
-                        if old != gate {
-                            let servo = if old == "GATE_OUT" { &mut gate_out } else { &mut gate_in };
-                            servo.set_duty(duty_0)?;
-                        }
+                    if gate == "GATE_OUT" {
+                        gate_out.set_duty(duty_up)?;
+                    } else {
+                        gate_in.set_duty(duty_up)?;
                     }
-                    let servo = if gate == "GATE_OUT" { &mut gate_out } else { &mut gate_in };
-                    servo.set_duty(duty_up)?;
                     if cfg.buzzer_enabled {
                         buzzer.set_high()?;
                         buzzer_until = Some(now_us() + 300_000);
                     }
-                    hold = Some((gate.to_string(), now_us() + cfg.servo_open_time_sec as i64 * 1_000_000));
+                    state.open = true;
+                    state.close_at = if state.held {
+                        None
+                    } else {
+                        Some(now_us() + cmd.auto_close_ms.unwrap_or(30_000).max(1) as i64 * 1_000)
+                    };
                     lcd_line1 = "DANG MO".to_string();
                     lcd_line2 = if gate == "GATE_OUT" {
                         "CONG RA".to_string()
@@ -451,15 +481,29 @@ fn main() -> Result<(), EspError> {
                     ("SUCCESS", "Barrier opened 90 deg successfully")
                 }
                 "CLOSE" => {
-                    let servo = if gate == "GATE_OUT" { &mut gate_out } else { &mut gate_in };
-                    servo.set_duty(duty_0)?;
-                    if hold.as_ref().is_some_and(|(g, _)| g == gate) {
-                        hold = None;
-                        lcd_line1 = "READY".to_string();
-                        lcd_line2 = "SAN SANG".to_string();
-                        wait_until = None;
+                    if gate == "GATE_OUT" {
+                        gate_out.set_duty(duty_0)?;
+                    } else {
+                        gate_in.set_duty(duty_0)?;
                     }
+                    *state = GateState::default();
                     ("SUCCESS", "Barrier closed")
+                }
+                "HOLD_OPEN" => {
+                    if gate == "GATE_OUT" {
+                        gate_out.set_duty(duty_up)?;
+                    } else {
+                        gate_in.set_duty(duty_up)?;
+                    }
+                    state.open = true;
+                    state.held = true;
+                    state.close_at = None;
+                    ("SUCCESS", "Barrier held open")
+                }
+                "RESUME_AUTO" => {
+                    state.held = false;
+                    state.close_at = state.open.then(|| now_us() + 30_000_000);
+                    ("SUCCESS", "Barrier auto close resumed")
                 }
                 "REBOOT" => {
                     let body = format!(
@@ -482,10 +526,14 @@ fn main() -> Result<(), EspError> {
                 cmd.command_id
             );
             client.publish(ACK_TOPIC, QoS::AtLeastOnce, false, body.as_bytes())?;
+            if seen_cmds.len() == 8 {
+                seen_cmds.remove(0);
+            }
+            seen_cmds.push((cmd.command_id.clone(), body));
             println!("gui ack {} {status}", cmd.command_id);
         }
 
-        if wait_until.is_some_and(|t| now >= t) && hold.is_none() {
+        if wait_until.is_some_and(|t| now >= t) && !gate_in_state.open && !gate_out_state.open {
             lcd_line1 = "READY".to_string();
             lcd_line2 = "SAN SANG".to_string();
             wait_until = None;

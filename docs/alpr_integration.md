@@ -17,15 +17,20 @@ Backend vẫn cần MySQL và MQTT theo cấu hình dự án.
 
 ## Luồng
 
-RFID vào tạo phiên và giữ ô trước, rồi backend gọi AI
-`POST /capture` với `lane=IN` và `session_id` là mã phiên. RFID ra gọi
-với `lane=OUT`. AI chọn ROI của làn nhưng chỉ mở **một webcam**.
+RFID vào tạo phiên và giữ ô trước, rồi backend gọi AI `POST /snapshot`
+với `lane=IN` và `session_id` là mã phiên. RFID ra làm tương tự với
+`lane=OUT`. AI chọn ROI của làn nhưng chỉ mở **một webcam**. Backend lưu
+URL JPEG và phát cập nhật dashboard ngay sau snapshot; sau đó gửi chính
+ảnh JPEG này tới `POST /recognize` để nhận OCR. Ảnh đã chụp xuất hiện
+trước biển OCR, kể cả khi OCR chậm hoặc thất bại.
+Với JPEG lấy từ `/snapshot`, backend gửi `image_is_lane_crop=true` để
+AI không áp ROI lần thứ hai; ảnh tải lên từ nguồn khác giữ mặc định `false`.
 
 Trên dashboard thật, nhân viên tạo/chọn phiên, nhập mã phiên tại camera
 làn tương ứng và bấm **Chụp**. Trình duyệt gọi
 `POST /api/v1/alpr/capture` bằng Bearer JWT; backend kiểm tra phiên đang
-ở `ENTRY_PENDING` cho làn vào hoặc `ACTIVE` cho làn ra, rồi lưu
-`entry_ocr_plate`/`exit_ocr_plate` và URL ảnh. Nhân viên đối chiếu
+ở `ENTRY_PENDING` cho làn vào hoặc `ACTIVE` cho làn ra, lưu URL ảnh trước,
+rồi cập nhật `entry_ocr_plate`/`exit_ocr_plate` khi OCR xong. Nhân viên đối chiếu
 ảnh, xác nhận biển để gửi lệnh cổng hoặc chuẩn bị lượt ra.
 
 Payload:
