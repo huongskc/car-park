@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import sys
@@ -20,7 +21,7 @@ try:
 except Exception:
     pass
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -78,6 +79,7 @@ class LiveCamera:
         self._stop = threading.Event()
         self._thread = None
         self._frame_seq = 0
+        self._frame_time = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -117,6 +119,7 @@ class LiveCamera:
             if cap is None or not cap.isOpened():
                 cap = self._open()
                 if not cap.isOpened():
+                    cap.release()
                     cap = None
                     time.sleep(0.5)
                     continue
@@ -130,13 +133,14 @@ class LiveCamera:
             with self._cond:
                 self._frame = frame
                 self._frame_seq += 1
+                self._frame_time = time.monotonic()
                 self._cond.notify_all()
         if cap is not None:
             cap.release()
 
     def frame(self):
         with self._lock:
-            if self._frame is None:
+            if self._frame is None or time.monotonic() - self._frame_time > 2:
                 return None
             return self._frame.copy()
 
@@ -193,7 +197,7 @@ def jpeg_bytes(frame: np.ndarray) -> bytes:
 
 @app.get('/health')
 def health():
-    return {'status': 'ok'}
+    return {'status': 'ok', 'camera_ready': live_camera.frame() is not None}
 
 
 YOLO_MODEL = os.getenv('YOLO_MODEL', 'models/license_plate.pt').split('#')[0].strip()
@@ -288,6 +292,32 @@ def preview(lane: Literal['IN', 'OUT'] = Query()):
     if not crop.size:
         raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
     return Response(jpeg_bytes(crop), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/stream', dependencies=[Depends(authenticate)])
+def stream(lane: Literal['IN', 'OUT'] = Query()):
+    """Subscribe to the webcam opened at startup; never open a second camera."""
+    def next_frame():
+        crop = roi_for(lane, snap())
+        if not crop.size:
+            raise HTTPException(400, 'Vùng nhận diện không có dữ liệu ảnh')
+        content = jpeg_bytes(crop)
+        return (b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
+                + str(len(content)).encode('ascii') + b'\r\n\r\n' + content + b'\r\n')
+
+    first_frame = next_frame()
+
+    async def frames():
+        yield first_frame
+        while True:
+            await asyncio.sleep(1 / 12)
+            try:
+                yield await asyncio.to_thread(next_frame)
+            except HTTPException:
+                return  # A lost camera ends the stream so the viewer can reconnect.
+
+    return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame',
+                             headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 
 @app.post('/capture', dependencies=[Depends(authenticate)])

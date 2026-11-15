@@ -2,6 +2,8 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Response, UploadFile
 from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.core.dependencies import require_role
 from app.database import get_db
@@ -23,6 +25,25 @@ router = APIRouter(
 async def preview_lane(lane: Literal["IN", "OUT"]):
     content = await alpr_service.preview(lane)
     return Response(content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/stream")
+async def stream_lane(lane: Literal["IN", "OUT"], db: Session = Depends(get_db)):
+    db.close()  # Authorization is finished; video must not hold a DB connection.
+    upstream = await alpr_service.open_stream(lane)
+
+    async def chunks():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(
+        chunks(), media_type=upstream.headers["content-type"],
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(upstream.aclose),
+    )
 
 
 @router.post("/capture", response_model=CaptureResult)

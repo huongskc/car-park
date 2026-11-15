@@ -48,6 +48,11 @@ class ALPRService:
             raise HTTPException(504, "AI service xử lý quá thời gian cho phép.") from None
         except httpx.RequestError:
             raise HTTPException(503, "Không kết nối được AI service.") from None
+        self._check_response(response, path)
+        return response
+
+    @staticmethod
+    def _check_response(response: httpx.Response, path: str) -> None:
         if response.status_code == 409:
             raise HTTPException(409, "Camera đang bận. Vui lòng thử lại.")
         if response.status_code == 404 and path.startswith("images/"):
@@ -59,6 +64,26 @@ class ALPRService:
         if response.status_code != 200:
             # Do not expose upstream errors, credentials or internal URLs.
             raise HTTPException(502, "AI service trả về lỗi hoặc xác thực không thành công.")
+
+    async def open_stream(self, lane: str) -> httpx.Response:
+        if not settings.INTERNAL_ALPR_API_KEY.strip():
+            raise HTTPException(503, "Chưa cấu hình INTERNAL_ALPR_API_KEY cho backend.")
+        client = self._get_client()
+        request = client.build_request("GET", "stream", params={"lane": lane},
+                                       timeout=httpx.Timeout(10.0))
+        try:
+            response = await client.send(request, stream=True)
+        except httpx.TimeoutException:
+            raise HTTPException(504, "Camera phản hồi quá thời gian cho phép.") from None
+        except httpx.RequestError:
+            raise HTTPException(503, "Không kết nối được AI service.") from None
+        try:
+            self._check_response(response, "stream")
+            if response.headers.get("content-type", "").lower() != "multipart/x-mixed-replace; boundary=frame":
+                raise HTTPException(502, "AI service trả về luồng camera không hợp lệ.")
+        except Exception:
+            await response.aclose()
+            raise
         return response
 
     async def capture(self, payload: CaptureRequest) -> CaptureResult:
