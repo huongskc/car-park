@@ -54,6 +54,10 @@ Sao chép `.env.example` thành `.env` và đặt `ALPR_API_KEY` hợp lệ trư
 .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
+Webcam tự mở khi AI service khởi động. `GET /stream?lane=IN|OUT` trả MJPEG
+liên tục để FE xem trực tiếp qua backend; `GET /preview` vẫn trả một JPEG.
+`/health` có `camera_ready`. Luồng chụp/OCR theo RFID hoặc phiên giữ nguyên.
+
 Có `/health`, `POST /snapshot`, `POST /recognize`, `POST /capture` (tương thích cũ)
 và `GET /images/{image_id}`. `/snapshot` trả JPEG cùng header `X-Image-Id`
 ngay sau khi chụp; backend lưu ảnh trước rồi gửi chính JPEG đó tới `/recognize`

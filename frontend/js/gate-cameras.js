@@ -1,8 +1,8 @@
 'use strict';
-// AI service owns the webcam; this panel shows live preview and requests captures.
+// AI service owns the webcam; authenticated MJPEG supplies the live preview.
 window.GateCameras = (() => {
   const state = {IN:{}, OUT:{}};
-  let config = null, previewTimer = null;
+  let config = null;
   const panel = lane => document.getElementById('gate-camera-' + lane);
 
   function view(lane) {
@@ -72,33 +72,94 @@ window.GateCameras = (() => {
     }
   }
 
-  async function refreshPreview(lane) {
+  async function startStream(lane) {
     const s = state[lane];
-    if (!config || s.previewBusy || document.hidden) return;
-    const p = panel(lane);
+    const owner = config, p = panel(lane);
+    if (!owner || s.controller) return;
     if (!p) return;
-    s.previewBusy = true;
-    const controller = typeof AbortController!=='undefined' ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 2000) : null;
+    const current = () => config===owner && state[lane]===s;
+    const controller = new AbortController();
+    s.controller = controller;
+    let reader, watchdog;
+    const armTimeout = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => controller.abort(), 8000);
+    };
     try {
-      const base = config.apiBase.replace(/\/$/, '');
-      const response = await fetch(base+'/alpr/preview?lane='+lane, {headers:{Authorization:'Bearer '+config.session.access_token},cache:'no-store',...(controller?{signal:controller.signal}:{})});
-      if (response.status===401) { config.onUnauthorized?.(); return; }
-      if (!response.ok) throw new Error('preview');
-      const blob = await response.blob();
-      if (state[lane]!==s || !config) return;
-      const url = URL.createObjectURL(blob);
-      const img = p.querySelector('[data-role="preview"]'), oldUrl = s.previewUrl;
-      s.previewUrl = url;
-      img.onload = img.onerror = () => { if (oldUrl) URL.revokeObjectURL(oldUrl); };
-      img.src = url;
-      img.hidden = false;
-      p.querySelector('.camera-placeholder').hidden = true;
-    } catch (_) {
-      if (!s.previewUrl) p.querySelector('.camera-placeholder').textContent = 'Không xem được camera.';
+      armTimeout();
+      const base = owner.apiBase.replace(/\/$/, '');
+      const response = await fetch(base+'/alpr/stream?lane='+lane, {
+        headers:{Authorization:'Bearer '+owner.session.access_token},
+        cache:'no-store', signal:controller.signal
+      });
+      if (!current()) return;
+      if (response.status===401) { owner.onUnauthorized?.(); return; }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(typeof error.detail==='string' ? error.detail : 'Không mở được camera (HTTP '+response.status+').');
+      }
+      if (!response.headers.get('content-type')?.startsWith('multipart/x-mixed-replace') || !response.body) throw new Error('Luồng camera không đúng định dạng.');
+      reader = response.body.getReader();
+      let buffer = new Uint8Array(0), frameLength = null;
+      const decoder = new TextDecoder();
+      while (current()) {
+        armTimeout();
+        const {value, done} = await reader.read();
+        if (done) throw new Error('Luồng camera đã ngắt.');
+        if (!current()) return;
+        const merged = new Uint8Array(buffer.length + value.length);
+        merged.set(buffer); merged.set(value, buffer.length); buffer = merged;
+        if (buffer.length > 4*1024*1024+1024) throw new Error('Khung hình camera quá lớn.');
+        let latestFrame;
+        while (true) {
+          if (frameLength===null) {
+            let end = -1;
+            for (let i=0; i+3<buffer.length; i++) {
+              if (buffer[i]===13 && buffer[i+1]===10 && buffer[i+2]===13 && buffer[i+3]===10) { end=i; break; }
+            }
+            if (end<0) {
+              if (buffer.length>1024) throw new Error('Header luồng camera không hợp lệ.');
+              break;
+            }
+            const length = /(?:^|\r\n)Content-Length:\s*(\d+)\r?$/im.exec(decoder.decode(buffer.subarray(0,end)));
+            frameLength = length ? Number(length[1]) : 0;
+            if (!frameLength || frameLength>4*1024*1024) throw new Error('Kích thước khung hình không hợp lệ.');
+            buffer = buffer.subarray(end+4);
+          }
+          if (buffer.length<frameLength) break;
+          latestFrame = buffer.slice(0,frameLength);
+          buffer = buffer.subarray(frameLength);
+          frameLength = null;
+        }
+        if (latestFrame) {
+          const url = URL.createObjectURL(new Blob([latestFrame],{type:'image/jpeg'}));
+          try {
+            const image = new Image();
+            image.src = url;
+            await image.decode();
+            if (!current()) { URL.revokeObjectURL(url); return; }
+            const oldUrl = s.previewUrl;
+            s.previewUrl = url;
+            p.querySelector('[data-role="preview"]').src = url;
+            paint(lane);
+            if (oldUrl) URL.revokeObjectURL(oldUrl);
+          } catch (error) { URL.revokeObjectURL(url); throw error; }
+        }
+      }
+    } catch (error) {
+      if (current()) {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+        s.previewUrl = null;
+        paint(lane);
+        p.querySelector('.camera-placeholder').textContent =
+          (error.name==='AbortError' ? 'Camera không phản hồi.' : error.message || 'Không xem được camera.')+' Đang kết nối lại…';
+        s.retryTimer = setTimeout(() => startStream(lane), 2000);
+      }
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-      s.previewBusy = false;
+      clearTimeout(watchdog);
+      controller.abort();
+      if (reader) { try { await reader.cancel(); } catch (_) {} }
+      s.controller = null;
     }
   }
 
@@ -110,15 +171,14 @@ window.GateCameras = (() => {
       if (!p) continue;
       p.querySelector('[data-action="capture"]').onclick = () => capture(lane);
       paint(lane);
-      refreshPreview(lane);
+      startStream(lane);
     }
-    previewTimer = setInterval(() => { refreshPreview('IN'); refreshPreview('OUT'); }, 350);
   }
 
   function unmount() {
-    if (previewTimer) clearInterval(previewTimer);
-    previewTimer = null;
     for (const lane of ['IN','OUT']) {
+      clearTimeout(state[lane].retryTimer);
+      state[lane].controller?.abort();
       state[lane].captureSeq = (state[lane].captureSeq || 0) + 1;
       if (state[lane].previewUrl) URL.revokeObjectURL(state[lane].previewUrl);
       state[lane] = {};
