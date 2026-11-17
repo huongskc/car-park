@@ -172,7 +172,7 @@ fn main() -> Result<(), EspError> {
     );
 
     let mut trig = PinDriver::output(p.pins.gpio13)?;
-    let echo = PinDriver::input(p.pins.gpio14, Pull::Floating)?;
+    let echo = PinDriver::input(p.pins.gpio14, Pull::Down)?;
     let mut buzzer = PinDriver::output(p.pins.gpio17)?;
     buzzer.set_low()?;
 
